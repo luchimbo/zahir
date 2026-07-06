@@ -54,15 +54,29 @@ try {
   const health = await waitFor(`http://127.0.0.1:${apiPort}/health`);
   const home = await waitFor(`http://127.0.0.1:${frontendPort}`);
   const search = await waitFor(`http://127.0.0.1:${frontendPort}/api/kg/search?q=Don%20Julio`);
+  const natural = await waitFor(`http://127.0.0.1:${frontendPort}/api/kg/search/natural?q=decks%20gastronomicos%20palermo`);
 
   const healthJson = await health.json();
   const homeHtml = await home.text();
   const searchJson = await search.json();
+  const naturalJson = await natural.json();
+  const firstEntityId = searchJson.results?.[0]?.id;
+  let entityHtml = "";
+  if (firstEntityId) {
+    const entity = await waitFor(`http://127.0.0.1:${frontendPort}/entity/${firstEntityId}`);
+    entityHtml = await entity.text();
+  }
 
   console.log("\nSmoke OK");
   console.log(`api=${healthJson.status}`);
-  console.log(`home_has_title=${homeHtml.includes("Workbench de datos verificados")}`);
+  console.log(`home_has_title=${homeHtml.includes("Palermo Knowledge Search")}`);
   console.log(`search_results=${searchJson.results?.length ?? 0}`);
+  console.log(`entity_page=${Boolean(firstEntityId && entityHtml.includes("Cargando entidad"))}`);
+  console.log(`natural_has_answer=${Boolean(naturalJson.answer)}`);
+  console.log(`natural_citations=${naturalJson.citations?.length ?? 0}`);
+  console.log(`natural_mentions=${naturalJson.mentioned_entities?.length ?? 0}`);
+  console.log(`natural_explainability=${naturalJson.explainability?.length ?? 0}`);
+  console.log(`natural_has_coordinates=${Boolean(naturalJson.mentioned_entities?.some((entity) => typeof entity.lat === "number" && typeof entity.lng === "number"))}`);
 } finally {
   api.kill();
   next.kill();

@@ -91,17 +91,20 @@ Alcance: fuentes no-inmobiliarias. Quedan pausados Zonaprop, Argenprop, MercadoL
    - Impacto: preguntas de conectividad y accesibilidad.
    - Nota: usa filtro por barrio cuando existe; en recorridos detecta si la geometria pasa por Palermo y guarda un punto representativo.
 
-3. `gcba_culture_public_space.py`
+3. `gcba_culture_public_space.py` - implementado
    - Datasets: `espacios-culturales`, `ferias-mercados`, `monumentos`, `murales`, `calesitas`.
    - Impacto: cosas para hacer y patrimonio.
+   - Nota: carga solo Palermo por barrio o bounding box y guarda origins oficiales por propiedad.
 
-4. `gcba_environment.py`
+4. `gcba_environment.py` - implementado
    - Datasets: `arbolado-publico-lineal`, `arbolado-espacios-verdes`, `calidad-aire`, `mapa-ruido`, `sitios-posibles-anegamiento`.
    - Impacto: calidad urbana, verde, ruido, ambiente.
+   - Nota: usa fuentes oficiales GCBA, filtros por Comuna 14/bounding box y carga batch con limites de arbolado para no saturar Neon.
 
-5. `gcba_commercial_signals.py`
+5. `gcba_commercial_signals.py` - implementado
    - Datasets: `habilitaciones-aprobadas`, `mapa-oportunidades-comerciales-moc`, `calzada-gastronomica`.
    - Impacto: actividad comercial sin entrar en inmobiliario.
+   - Nota: usa habilitaciones 2026 por Comuna 14, MOC con zonas GeoJSON y permisos/decks gastronomicos oficiales.
 
 ## Preguntas nuevas que permitiria responder
 

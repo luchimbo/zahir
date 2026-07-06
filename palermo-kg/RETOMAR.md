@@ -1,55 +1,60 @@
 # Retomar Palermo Knowledge Graph
 
-Estado verificado el 2026-07-02.
+Estado consolidado: 2026-07-06.
 
-## Resumen
+## Estado actual
 
-El proyecto ya tiene una base funcional:
+Palermo Knowledge Graph ya tiene una v1 funcional:
 
 - Schema PostgreSQL desplegado en Neon.
-- API FastAPI funcionando contra la DB.
-- Scrapers Python existentes para BA Data, Google Places, OSM, Wikidata, IGJ, BCRA, Zonaprop y Argenprop.
-- Agente CLI en `agent/agent.py` usando OpenRouter.
-- Frontend Next.js inicial en `frontend/`.
-- `query_log` implementado para detectar gaps de cobertura.
+- API FastAPI con endpoints de health, search, search natural, entity, query e insights.
+- Frontend Next.js conectado a la API local/proxy.
+- Respuestas naturales con citas reales en `/api/search/natural`.
+- Fallback extractivo local cuando no hay `OPENROUTER_API_KEY`.
+- Query log para detectar gaps de cobertura.
+- Scrapers oficiales y semi-estructurados para GCBA, OSM, Wikidata, IGJ, BCRA, Google Places y Boletín Oficial.
 
-La documentacion antigua habla de 458 entidades, pero el estado real actual de la DB es:
+Estado de referencia de la DB documentado en la última verificación:
 
-- 36.646 entidades canonicas.
-- Principales fuentes con propiedades cargadas:
-  - `igj`: 118.595
-  - `ba_data`: 16.511
-  - `osm`: 5.229
-  - `google_places`: 1.662
-  - `wikidata`: 562
-  - `bcra`: 1.010
+- 46.711 entidades canónicas.
+- Fuentes principales con propiedades cargadas:
+  - `igj`
+  - `ba_data`
+  - `osm`
+  - `google_places`
+  - `wikidata`
+  - `bcra`
 
-Nota operativa: los scrapers inmobiliarios quedan pausados por ahora:
+## Alcance MVP v1
 
-- `zonaprop.py`
-- `argenprop.py`
-- `mercadolibre_inmuebles.py` cuando exista
+La v1 se concentra en responder con datos trazables sobre:
 
-No correr ingesta de alquileres/ventas hasta reactivar explicitamente ese frente.
+- Búsqueda natural con citas.
+- Búsqueda estructurada de entidades.
+- Transporte y movilidad.
+- Cultura, espacio público, monumentos, ferias y murales.
+- Ambiente urbano, arbolado, ruido y anegamientos.
+- Comercio, habilitaciones, decks y permisos gastronómicos.
+- Entidades legales de IGJ.
+- Fuentes oficiales GCBA y fuentes abiertas ya integradas.
 
-Scraper nuevo implementado:
+Fuera de v1:
 
-- `scrapers/gcba_health_education.py`
-  - `farmacias`
-  - `hospitales`
-  - `centros-salud-accion-comunitaria-cesac`
-  - `centros-salud-privados`
-  - `establecimientos-educativos`
-  - Corre solo fuentes oficiales GCBA no-inmobiliarias.
-  - Filtra por `barrio` cuando existe y usa bounding box solo como fallback.
-- `scrapers/gcba_mobility.py`
-  - `ecobici`
-  - `subte_estaciones`
-  - `bocas_subte`
-  - `colectivos_paradas`
-  - `colectivos_recorridos`
-  - Corre solo movilidad oficial GCBA no-inmobiliaria.
-  - Soporta selector de dataset y offset numerico para retomar cargas largas.
+- Scraping inmobiliario.
+- Scraping agresivo de sitios comerciales.
+- Automatización n8n/Railway.
+- Nuevas APIs pagas.
+- Cambios de schema.
+
+## No correr sin aprobación
+
+No ejecutar ni reactivar estos frentes sin aprobación explícita:
+
+- `scrapers/zonaprop.py`
+- `scrapers/argenprop.py`
+- futuro `scrapers/mercadolibre_inmuebles.py`
+- scrapers con costos o cuotas pagas nuevas
+- ingestas masivas que puedan superar límites de Neon Free
 
 ## Setup local
 
@@ -59,20 +64,35 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-El entorno local usa Python 3.13. Por eso `asyncpg` esta fijado en `0.30.0`; `0.29.0` intenta compilar y falla sin Microsoft C++ Build Tools.
+Variables de entorno esperadas en `.env`:
 
-## Verificaciones rapidas
+```text
+DATABASE_URL=postgresql://...
+GOOGLE_PLACES_API_KEY=...
+OPENROUTER_API_KEY=...
+OR_MODEL=deepseek/deepseek-v4-flash
+```
 
-Estado de la DB:
+`OPENROUTER_API_KEY` es opcional para desarrollo: sin key, `/api/search/natural` usa respuesta extractiva local.
+
+## Comandos útiles
+
+Estado de DB:
 
 ```powershell
 .\.venv\Scripts\python scripts\db_status.py
 ```
 
-Smoke test de API:
+Smoke API:
 
 ```powershell
 .\.venv\Scripts\python scripts\smoke_api.py
+```
+
+Smoke búsqueda/citas:
+
+```powershell
+.\.venv\Scripts\python scripts\smoke_search_citations.py
 ```
 
 Aplicar migraciones:
@@ -81,48 +101,13 @@ Aplicar migraciones:
 .\.venv\Scripts\python scripts\migrate.py
 ```
 
-Consultar gaps:
-
-```text
-GET /api/insights/query-gaps
-GET /api/insights/query-summary
-```
-
-Build y smoke test del frontend:
+API local:
 
 ```powershell
-cd D:\Zahir\palermo-kg\frontend
-$env:npm_config_cache="D:\Zahir\palermo-kg\frontend\.npm-cache"
-npm install
-npm run build
-npm run smoke
-```
-
-Resultado esperado del frontend smoke:
-
-```text
-Smoke OK
-api=ok
-home_has_title=true
-search_results=10
-```
-
-El smoke del frontend usa puertos aislados por defecto (`8017` API, `3017` Next) para no chocar con servidores locales ya levantados.
-
-## Levantar en local
-
-API:
-
-```powershell
-cd D:\Zahir\palermo-kg
 .\.venv\Scripts\python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-```text
-http://127.0.0.1:8000
-```
-
-Frontend:
+Frontend local:
 
 ```powershell
 cd D:\Zahir\palermo-kg\frontend
@@ -130,18 +115,32 @@ $env:npm_config_cache="D:\Zahir\palermo-kg\frontend\.npm-cache"
 npm run dev -- --hostname 127.0.0.1 --port 3001
 ```
 
-```text
-http://127.0.0.1:3001
+Build y smoke frontend:
+
+```powershell
+cd D:\Zahir\palermo-kg\frontend
+$env:npm_config_cache="D:\Zahir\palermo-kg\frontend\.npm-cache"
+npm run build
+npm run smoke
 ```
 
-Nota: el puerto `3000` estaba ocupado por otra app local, por eso el frontend de Palermo KG usa `3001`.
+## Endpoints principales
 
-## Proximo paso recomendado
+- `GET /health`
+- `GET /api/search?q=texto`
+- `GET /api/search/natural?q=texto`
+- `GET /api/entity/search?name=texto`
+- `GET /api/entity/{uuid}`
+- `GET /api/entity/{uuid}/{key}`
+- `GET /api/query`
+- `GET /api/insights/query-gaps`
+- `GET /api/insights/query-summary`
 
-La v1 del frontend ya permite buscar entidades y consultar colecciones rapidas contra la API local. Los siguientes pasos recomendados:
+## Próximo paso recomendado
 
-1. Normalizar/limpiar `README.md`, `PLAN.md` y `plan_desarrollo.md`, porque todavia no reflejan el mismo estado.
-2. Endurecer scoring de `/api/search`; hoy pg_trgm devuelve resultados flojos para consultas raras que contienen "Palermo".
-3. Reparar `bcra_sucursales.py`: la URL de BA Data para cajeros devuelve 404.
-4. Agregar endpoint de search con respuesta natural y citas reales.
-5. Seguir con fuentes no-inmobiliarias: cultura/espacio publico, ambiente urbano y señales comerciales no-inmobiliarias.
+Después de esta consolidación:
+
+1. Mejorar vista de entidad en frontend agrupando propiedades por fuente, fecha y confianza.
+2. Agregar tests automatizados más finos para ranking.
+3. Revisar cobertura de gaps reales desde `/api/insights/query-gaps`.
+4. Recién después evaluar nuevas fuentes.

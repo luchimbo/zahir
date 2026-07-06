@@ -34,7 +34,7 @@ try:
     HAS_PYMUPDF = True
 except ImportError:
     HAS_PYMUPDF = False
-    print("⚠ PyMuPDF no instalado. Instalar con: pip install pymupdf")
+    print("[WARNING] PyMuPDF no instalado. Instalar con: pip install pymupdf")
 
 from scrapers.shared.db_helpers import (
     get_conn, get_or_create_entity, upsert_property, get_source_id
@@ -212,7 +212,7 @@ async def insert_entidad(conn, entidad: dict, source_id: str, origen_url: str):
             await upsert_property(conn, entity_id, key, normalize_value(str(val)),
                                    vtype, source_id, origins=[origen_url])
 
-    print(f"    → [{entity_type}] {nombre}")
+    print(f"    -> [{entity_type}] {nombre}")
 
 
 # ── Scraper principal ─────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
     total_entidades = 0
 
     for fecha in fechas:
-        print(f"\n→ Procesando Boletín del {fecha}...")
+        print(f"\n-> Procesando Boletin del {fecha}...")
 
         publicaciones = await fetch_publicaciones(fecha)
         if not publicaciones:
@@ -264,7 +264,7 @@ async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
                     await insert_entidad(conn, ent, source_id, pdf_url)
                     total_entidades += 1
 
-    print(f"\n  ✓ {total_entidades} entidades del Boletín Oficial procesadas")
+    print(f"\n  [OK] {total_entidades} entidades del Boletin Oficial procesadas")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -297,7 +297,7 @@ async def main():
             "SELECT id::text FROM sources WHERE source_name = 'boletin_oficial'"
         )
         await scrape_boletin(conn, source_id, dias_atras=args.dias)
-        print("\n✓ Scraper finalizado")
+        print("\n[OK] Scraper finalizado")
     finally:
         await conn.close()
 

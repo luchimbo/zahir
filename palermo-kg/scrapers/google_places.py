@@ -95,99 +95,110 @@ async def fetch_places(client: httpx.AsyncClient, place_type: str) -> list:
     return r.json().get("places", [])
 
 
-async def scrape_google_places(conn, source_id: str):
-    print("→ Scrapeando Google Places...")
+async def scrape_google_places(source_id: str):
+    print("-> Scrapeando Google Places...")
     seen_ids = set()
     total = 0
+    all_collected = []
 
     async with httpx.AsyncClient() as client:
         for place_type in PLACE_TYPES:
             try:
                 places = await fetch_places(client, place_type)
-                print(f"  → {place_type}: {len(places)} resultados")
+                print(f"  -> {place_type}: {len(places)} resultados")
+                for p in places:
+                    all_collected.append((place_type, p))
             except Exception as e:
                 print(f"  [warn] {place_type}: {e}")
                 continue
 
-            for place in places:
-                gid = place.get("id", "")
-                if gid in seen_ids:
-                    continue
-                seen_ids.add(gid)
+    if not all_collected:
+        print("  No se recolectaron lugares de Google Places.")
+        return
 
-                name = place.get("displayName", {}).get("text", "").strip()
-                if not name:
-                    continue
+    conn = await get_conn()
+    try:
+        for place_type, place in all_collected:
+            gid = place.get("id", "")
+            if gid in seen_ids:
+                continue
+            seen_ids.add(gid)
 
-                loc = place.get("location", {})
-                lat = loc.get("latitude")
-                lng = loc.get("longitude")
+            name = place.get("displayName", {}).get("text", "").strip()
+            if not name:
+                continue
 
-                address = place.get("formattedAddress", "")
-                phone = place.get("nationalPhoneNumber", "")
-                website = place.get("websiteUri", "")
-                rating = place.get("rating")
-                review_count = place.get("userRatingCount")
-                price_level = PRICE_MAP.get(place.get("priceLevel", ""), "")
-                summary = place.get("editorialSummary", {}).get("text", "")
-                types = place.get("types", [])
+            loc = place.get("location", {})
+            lat = loc.get("latitude")
+            lng = loc.get("longitude")
 
-                subtype = place_type
+            address = place.get("formattedAddress", "")
+            phone = place.get("nationalPhoneNumber", "")
+            website = place.get("websiteUri", "")
+            rating = place.get("rating")
+            review_count = place.get("userRatingCount")
+            price_level = PRICE_MAP.get(place.get("priceLevel", ""), "")
+            summary = place.get("editorialSummary", {}).get("text", "")
 
-                entity_id = await get_or_create_entity(
-                    conn, name=name, entity_type="Organization",
-                    subtype=subtype, lat=lat, lng=lng,
-                    description=summary or None,
-                    origin_url=f"https://maps.google.com/?cid={gid}",
-                    all_names=[]
-                )
+            subtype = place_type
 
-                origin = [f"https://maps.google.com/?cid={gid}"]
+            entity_id = await get_or_create_entity(
+                conn, name=name, entity_type="Organization",
+                subtype=subtype, lat=lat, lng=lng,
+                description=summary or None,
+                origin_url=f"https://maps.google.com/?cid={gid}",
+                all_names=[]
+            )
 
-                if address:
-                    await upsert_property(conn, entity_id, "address", address,
-                                          "string", source_id, origins=origin)
-                if phone:
-                    await upsert_property(conn, entity_id, "phone", phone,
-                                          "string", source_id, origins=origin)
-                if website:
-                    await upsert_property(conn, entity_id, "website", website,
-                                          "url", source_id, origins=origin)
-                if rating is not None:
-                    await upsert_property(conn, entity_id, "rating", str(rating),
-                                          "number", source_id, origins=origin)
-                if review_count is not None:
-                    await upsert_property(conn, entity_id, "review_count", str(review_count),
-                                          "number", source_id, origins=origin)
-                if price_level:
-                    await upsert_property(conn, entity_id, "price_range", price_level,
-                                          "string", source_id, origins=origin)
-                if place.get("delivery") is not None:
-                    await upsert_property(conn, entity_id, "has_delivery",
-                                          str(place["delivery"]).lower(),
-                                          "boolean", source_id, origins=origin)
-                if place.get("reservable") is not None:
-                    await upsert_property(conn, entity_id, "accepts_reservations",
-                                          str(place["reservable"]).lower(),
-                                          "boolean", source_id, origins=origin)
-                if place.get("servesVegetarianFood") is not None:
-                    await upsert_property(conn, entity_id, "serves_vegetarian",
-                                          str(place["servesVegetarianFood"]).lower(),
-                                          "boolean", source_id, origins=origin)
+            origin = [f"https://maps.google.com/?cid={gid}"]
 
-                # Horarios
-                hours = place.get("regularOpeningHours", {})
-                weekday_text = hours.get("weekdayDescriptions", [])
-                if weekday_text:
-                    await upsert_property(conn, entity_id, "hours_text",
-                                          " | ".join(weekday_text),
-                                          "string", source_id, origins=origin)
+            if address:
+                await upsert_property(conn, entity_id, "address", address,
+                                      "string", source_id, origins=origin)
+            if phone:
+                await upsert_property(conn, entity_id, "phone", phone,
+                                      "string", source_id, origins=origin)
+            if website:
+                await upsert_property(conn, entity_id, "website", website,
+                                      "url", source_id, origins=origin)
+            if rating is not None:
+                await upsert_property(conn, entity_id, "rating", str(rating),
+                                      "number", source_id, origins=origin)
+            if review_count is not None:
+                await upsert_property(conn, entity_id, "review_count", str(review_count),
+                                      "number", source_id, origins=origin)
+            if price_level:
+                await upsert_property(conn, entity_id, "price_range", price_level,
+                                      "string", source_id, origins=origin)
+            if place.get("delivery") is not None:
+                await upsert_property(conn, entity_id, "has_delivery",
+                                      str(place["delivery"]).lower(),
+                                      "boolean", source_id, origins=origin)
+            if place.get("reservable") is not None:
+                await upsert_property(conn, entity_id, "accepts_reservations",
+                                      str(place["reservable"]).lower(),
+                                      "boolean", source_id, origins=origin)
+            if place.get("servesVegetarianFood") is not None:
+                await upsert_property(conn, entity_id, "serves_vegetarian",
+                                      str(place["servesVegetarianFood"]).lower(),
+                                      "boolean", source_id, origins=origin)
 
-                total += 1
+            # Horarios
+            hours = place.get("regularOpeningHours", {})
+            weekday_text = hours.get("weekdayDescriptions", [])
+            if weekday_text:
+                await upsert_property(conn, entity_id, "hours_text",
+                                      " | ".join(weekday_text),
+                                      "string", source_id, origins=origin)
 
+            total += 1
+            if total % 20 == 0:
+                print(f"    Procesados {total}/{len(all_collected)} lugares...")
             await asyncio.sleep(0.05)
+    finally:
+        await conn.close()
 
-    print(f"  ✓ {total} lugares de Palermo procesados")
+    print(f"  [OK] {total} lugares de Palermo procesados")
 
 
 async def main():
@@ -195,11 +206,13 @@ async def main():
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "google_places")
-        await scrape_google_places(conn, source_id)
-        print("\n✓ Scraper finalizado exitosamente")
     finally:
         await conn.close()
+        
+    await scrape_google_places(source_id)
+    print("\n[OK] Scraper finalizado exitosamente")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+

@@ -11,3 +11,4 @@ node_modules/
 .npm-cache/
 *.zip
 igj_cache.zip
+palermo-kg/scrapers/boletin_caba_cache/

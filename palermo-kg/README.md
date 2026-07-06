@@ -1,228 +1,170 @@
 # Palermo Knowledge Graph
 
-Una base de conocimiento hiper-local sobre el barrio de Palermo, Buenos Aires.
+Base de conocimiento hiper-local sobre Palermo, Buenos Aires.
 
-El objetivo es simple: que un agente de IA pueda responder preguntas sobre Palermo con información real y verificada, sin inventar nada.
+El objetivo es que un agente de IA responda preguntas sobre Palermo con datos reales, estructurados y trazables, en vez de inventar información.
 
----
+## Qué resuelve
 
-## El problema que resuelve
+Un LLM general puede alucinar nombres, direcciones, precios o estados legales. Este proyecto evita eso usando una fuente de verdad propia:
 
-Cuando le preguntás a un LLM "¿qué restaurantes hay en Palermo Soho?" o "¿cuánto cuesta alquilar un dos ambientes en Palermo Hollywood?", el modelo alucina. Inventa nombres, direcciones, precios. No tiene acceso a datos actualizados y locales.
-
-Este proyecto construye la infraestructura para que eso no pase:
-
-1. **Scrapers** que recolectan datos reales de decenas de fuentes (Google Places, BA Data, Zonaprop, IGJ, OpenStreetMap, etc.)
-2. **Una base de datos** que organiza esos datos como un grafo de entidades y relaciones
-3. **Una API** que expone esos datos
-4. **Un agente** que usa la API como única fuente de verdad
-
----
-
-## Arquitectura
-
-```
-Fuentes de datos (71 identificadas)
-    ↓ scrapers/
-Base de datos (Neon PostgreSQL)
-    ↓ api/
-API REST (FastAPI)
-    ↓
-Agente IA (DeepSeek via OpenRouter)
-    ↓
-Respuestas verificadas sobre Palermo
-```
-
----
+1. Scrapers que recolectan datos de fuentes públicas y abiertas.
+2. Una base PostgreSQL modelada como grafo de entidades, propiedades y relaciones.
+3. Una API REST que expone consultas naturales y estructuradas.
+4. Un frontend para explorar respuestas, citas, entidades y coordenadas.
+5. Un agente que debe usar el grafo como fuente principal.
 
 ## Estado actual
 
 | Componente | Estado |
 |---|---|
-| Schema de base de datos | Desplegado en Neon |
-| Scraper BA Data GCBA | 16.511+ propiedades (salud, educacion, transporte, espacios verdes) |
-| Scraper Google Places | 219 organizaciones |
-| Scraper OpenStreetMap | 5.229+ propiedades |
-| Scraper Wikidata | 562 propiedades |
-| Scraper IGJ | 118.595 propiedades |
-| Scraper Boletin Oficial | Implementado |
-| Scraper BCRA sucursales/cajeros | Reparado y funcionando |
-| API FastAPI | 7 endpoints listos |
-| Agente conversacional | Funciona en terminal |
-| Frontend (Next.js) | Funcional en Vercel/local |
+| Schema PostgreSQL | Desplegado en Neon |
+| API FastAPI | Funcional |
+| Search estructurado | Funcional |
+| Search natural con citas | Funcional, con fallback local sin LLM |
+| Frontend Next.js | Funcional local/Vercel |
+| Query log e insights | Funcional |
+| Scrapers GCBA/OSM/Wikidata/IGJ/BCRA/Google Places | Implementados |
+| Scrapers inmobiliarios | Pausados |
 
-**Total: ~37.000 entidades canonicas activas en la DB**
+La referencia operativa actual verificada es de 46.711 entidades canónicas activas. Para verificar el estado real de la DB:
 
-Los scrapers inmobiliarios (`zonaprop.py`, `argenprop.py`) quedan pausados por ahora.
-
----
-
-## Qué hay en la base de datos
-
-El grafo tiene entidades de estos tipos:
-
-| Tipo | Ejemplos |
-|---|---|
-| `Organization` | Restaurantes, bares, cafés, comercios, ONGs |
-| `Location` | Barrios y sub-barrios de Palermo |
-| `Facility` | Parques, plazas, museos, hospitales, escuelas |
-| `Transport` | Estaciones de subte, paradas de colectivo, Ecobici |
-| `Property` | Inmuebles en alquiler o venta |
-| `LegalEntity` | Sociedades registradas en IGJ |
-| `Event` | Obras de teatro, festivales, eventos culturales |
-| `HistoricalRecord` | Clausuras y resoluciones del Boletín Oficial |
-
-Cada entidad tiene:
-- **Propiedades** con historial (precio, rating, horarios, teléfono, etc.)
-- **Relaciones** con otras entidades (`LOCATED_IN`, `NEAR`, `OWNED_BY`, etc.)
-- **Tags** (vegano, pet-friendly, con-terraza, etc.)
-- **Confidence score** basado en cuántas fuentes confirman la entidad
-
----
-
-## Fuentes de datos
-
-71 fuentes identificadas en 10 categorías:
-
-| Categoría | Fuentes |
-|---|---|
-| Datos oficiales CABA/Nación | BA Data GCBA, IGJ, Boletín Oficial, AGIP, AFIP, Catastro, INDEC... |
-| Gastronomía / Comercio | Google Places, TripAdvisor, Guía Óleo, PedidosYa, Rappi... |
-| Inmuebles | Zonaprop, Argenprop, MercadoLibre, Properati... |
-| Geo / Mapa | OpenStreetMap, Wikidata, Foursquare, HERE Maps... |
-| Transporte | Subte, colectivos, Ecobici, Metrobus, SUBE... |
-| Cultura / Ocio | Alternativa Teatral, Eventbrite, museos, cines... |
-| Salud | Min. Salud CABA, farmacias de turno, PAMI... |
-| Educación | Min. Educación CABA, UBA, institutos terciarios... |
-| Ambiente / Clima | SMN, APRA calidad del aire, arbolado urbano, AySA... |
-| Seguridad | Mapa del Delito CABA, alertas vecinales... |
-
-Ver el plan completo de implementación en [`PLAN.md`](PLAN.md).
-
----
-
-## Cómo correr el proyecto
-
-### Requisitos
-
-```bash
-pip install -r requirements.txt
+```powershell
+.\.venv\Scripts\python scripts\db_status.py
 ```
 
-Variables de entorno en `.env`:
+## Alcance MVP v1
+
+La v1 prioriza:
+
+- Búsqueda natural con citas verificables.
+- Consultas estructuradas por entidad, tipo, subtipo y tag.
+- Transporte y movilidad.
+- Cultura, espacio público, monumentos, ferias y murales.
+- Ambiente urbano, ruido, arbolado y anegamientos.
+- Comercio, habilitaciones, decks y permisos gastronómicos.
+- Entidades legales de IGJ.
+- Fuentes oficiales GCBA y fuentes abiertas ya integradas.
+
+Queda fuera de v1:
+
+- Scraping inmobiliario.
+- Scraping agresivo de sitios comerciales.
+- Automatización n8n/Railway.
+- Nuevas APIs pagas.
+- Cambios de schema.
+
+## No correr sin aprobación
+
+Estos frentes están pausados o pueden consumir cuotas/costos. No ejecutarlos sin aprobación explícita:
+
+- `scrapers/zonaprop.py`
+- `scrapers/argenprop.py`
+- futuro `scrapers/mercadolibre_inmuebles.py`
+- nuevas APIs pagas
+- ingestas masivas sobre Neon Free
+
+## Arquitectura
+
+```text
+Fuentes públicas y abiertas
+    -> scrapers/
+PostgreSQL / Neon
+    -> api/ FastAPI
+Frontend Next.js
+    -> respuestas con citas, entidades, mapa y explicabilidad
+Agente IA
+    -> razona sobre datos estructurados
 ```
-DATABASE_URL=postgresql://...
-GOOGLE_PLACES_API_KEY=...
-OPENROUTER_API_KEY=...
-```
-
-### Correr la API
-
-```bash
-python -m uvicorn api.main:app --reload
-# → http://localhost:8000
-```
-
-### Correr el agente
-
-```bash
-python -m agent.agent
-```
-
-```
-============================================================
-  Agente Palermo KG  ·  DeepSeek V4 Flash via OpenRouter
-  Escribí tu pregunta o 'salir' para terminar
-============================================================
-
-Vos: ¿Dónde puedo comer una buena parrilla en Palermo?
-Agente: Según el Knowledge Graph, las parrillas mejor valoradas en Palermo son...
-```
-
-### Correr un scraper
-
-```bash
-python -m scrapers.gcba_ba_data
-python -m scrapers.google_places
-```
-
----
 
 ## API
 
 | Endpoint | Descripción |
 |---|---|
-| `GET /health` | Estado de la conexión a la DB |
-| `GET /api/search?q=texto` | Búsqueda full-text endurecida en entidades |
-| `GET /api/search/natural?q=texto` | Respuesta en lenguaje natural con citas reales |
-| `GET /api/entity/search?name=texto` | Búsqueda por nombre (fuzzy) |
-| `GET /api/entity/{uuid}` | Perfil completo de una entidad |
-| `GET /api/entity/{uuid}/{key}` | Valor de una propiedad específica |
-| `GET /api/query` | Query filtrada por tipo, subtipo o tag |
-| `GET /api/insights/query-gaps` | Consultas sin resultados (para detectar gaps) |
-| `GET /api/insights/query-summary` | Resumen de consultas recientes |
+| `GET /health` | Estado de conexión a DB |
+| `GET /api/search?q=texto` | Búsqueda estructurada con scoring |
+| `GET /api/search/natural?q=texto` | Respuesta natural con citas reales |
+| `GET /api/entity/search?name=texto` | Búsqueda fuzzy de entidad |
+| `GET /api/entity/{uuid}` | Entidad completa |
+| `GET /api/entity/{uuid}/{key}` | Propiedad específica |
+| `GET /api/query` | Consulta tabular por filtros |
+| `GET /api/insights/query-gaps` | Consultas sin resultados |
+| `GET /api/insights/query-summary` | Resumen de uso reciente |
 
----
+`/api/search/natural` mantiene este contrato:
 
-## Estructura del proyecto
+- `answer`
+- `answer_markdown`
+- `citations`
+- `entities_used`
+- `mentioned_entities`
+- `explainability`
 
-```
-palermo-kg/
-├── api/                    # FastAPI — endpoints REST
-│   ├── main.py
-│   ├── db.py
-│   ├── query_log.py
-│   └── routers/
-│       ├── entity.py
-│       ├── insights.py
-│       ├── query.py
-│       ├── search.py
-│       └── search_natural.py
-├── agent/                  # Agente conversacional
-│   └── agent.py            # DeepSeek + tools sobre la API
-├── scrapers/               # Scripts de recolección de datos
-│   ├── shared/
-│   │   ├── db_helpers.py   # upsert_entity, upsert_property, helpers batch
-│   │   └── normalizer.py   # normalize_name, normalize_value
-│   ├── gcba_ba_data.py     # BA Data GCBA base
-│   ├── gcba_health_education.py  # farmacias, hospitales, escuelas
-│   ├── gcba_mobility.py    # subte, colectivos, Ecobici
-│   ├── gcba_extended.py    # datasets extendidos GCBA
-│   ├── google_places.py    # Google Places
-│   ├── osm_palermo.py      # OpenStreetMap
-│   ├── wikidata_ba.py      # Wikidata
-│   ├── igj.py              # IGJ sociedades
-│   ├── bcra_sucursales.py  # cajeros ATM
-│   ├── boletin_oficial.py  # Boletín Oficial CABA
-│   ├── zonaprop.py         # pausado
-│   └── argenprop.py        # pausado
-├── db/                     # Schema SQL modular
-│   ├── RULES.md            # Reglas de consistencia — leer antes de tocar la DB
-│   ├── init.sql            # Schema completo (ejecuta todos los archivos)
-│   ├── 00_extensions.sql
-│   ├── 01_entity_types.sql
-│   └── ...
-├── PLAN.md                 # Roadmap completo y lista de fuentes
-├── AGENTS.md               # Instrucciones para agentes IA
-└── README.md               # Este archivo
+Si no hay datos suficientes, responde: `No tengo datos suficientes para responder.`
+
+## Setup
+
+```powershell
+cd D:\Zahir\palermo-kg
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.txt
 ```
 
----
+`.env`:
+
+```text
+DATABASE_URL=postgresql://...
+GOOGLE_PLACES_API_KEY=...
+OPENROUTER_API_KEY=...
+OR_MODEL=deepseek/deepseek-v4-flash
+```
+
+`OPENROUTER_API_KEY` es opcional para desarrollo.
+
+## Comandos
+
+API:
+
+```powershell
+.\.venv\Scripts\python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```powershell
+cd D:\Zahir\palermo-kg\frontend
+$env:npm_config_cache="D:\Zahir\palermo-kg\frontend\.npm-cache"
+npm run dev -- --hostname 127.0.0.1 --port 3001
+```
+
+Checks:
+
+```powershell
+.\.venv\Scripts\python scripts\db_status.py
+.\.venv\Scripts\python scripts\smoke_api.py
+.\.venv\Scripts\python scripts\smoke_search_citations.py
+```
+
+Frontend build/smoke:
+
+```powershell
+cd D:\Zahir\palermo-kg\frontend
+$env:npm_config_cache="D:\Zahir\palermo-kg\frontend\.npm-cache"
+npm run build
+npm run smoke
+```
 
 ## Reglas de consistencia
 
-Antes de modificar la base de datos o escribir un scraper, leer [`db/RULES.md`](db/RULES.md).
+Antes de modificar DB o scrapers, leer `db/RULES.md`.
 
-Las reglas más importantes:
-- **Nunca hacer DELETE** — las entidades se marcan con `is_active = false`
-- **Nunca sobreescribir propiedades** — se cierran con `valid_until` y se crea un registro nuevo (historial)
-- **Siempre filtrar `canonical_id IS NULL`** — los duplicados tienen `canonical_id` populado
-- **Nunca inventar datos** — si la DB no tiene la información, el agente lo dice explícitamente
+Reglas principales:
 
----
+- No borrar entidades; marcar `is_active = false`.
+- No sobrescribir propiedades históricas; cerrar con `valid_until` y crear una nueva.
+- Filtrar entidades canónicas con `canonical_id IS NULL`.
+- No inventar datos; si falta información, decirlo explícitamente.
 
-## Inspiración
+## Continuidad
 
-- [Cala.ai](https://cala.ai) — knowledge graph de ciudades
-- [Diffbot](https://diffbot.com) — knowledge graph de la web
-- [Wikidata](https://wikidata.org) — grafo de conocimiento libre
+Para retomar el proyecto, empezar por `RETOMAR.md`.

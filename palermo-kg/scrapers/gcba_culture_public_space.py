@@ -18,9 +18,14 @@ import csv
 import io
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from scrapers.shared.db_helpers import (
     get_conn,
@@ -147,6 +152,7 @@ async def ingest(
     conn,
     source_id: str,
     dataset_name: str,
+    dataset_url: str,
     rows: list[dict],
     name_builder,
     entity_type: str,
@@ -184,7 +190,7 @@ async def ingest(
             "subtype": final_subtype,
             "lat": lat,
             "lng": lng,
-            "origin_url": None,
+            "origin_url": dataset_url,
             "props": props,
         })
 
@@ -222,10 +228,36 @@ async def ingest(
                 "value": value,
                 "value_type": vtype,
                 "confidence": 0.95,
-                "origins": [],
+                "origins": [dataset_url],
             })
 
     await bulk_upsert_properties(conn, prop_records, source_id)
+    entity_ids = list({p["entity_id"] for p in prop_records})
+    if entity_ids:
+        await conn.execute(
+            """
+            UPDATE entities
+            SET origin_url = COALESCE(origin_url, $1)
+            WHERE id = ANY($2::uuid[])
+            """,
+            dataset_url,
+            entity_ids,
+        )
+        await conn.executemany(
+            """
+            UPDATE properties
+            SET origins = $4, last_seen_at = now()
+            WHERE entity_id = $1::uuid
+              AND key = $2
+              AND source_id = $3::uuid
+              AND valid_until IS NULL
+              AND (origins IS NULL OR cardinality(origins) = 0)
+            """,
+            [
+                (p["entity_id"], p["key"], source_id, p["origins"])
+                for p in prop_records
+            ],
+        )
     print(f"  OK: {len(candidates)} entidades de {dataset_name}")
     return len(candidates)
 
@@ -488,6 +520,7 @@ async def main():
                 conn,
                 source_id,
                 dataset["name"],
+                dataset["url"],
                 rows,
                 dataset["name_builder"],
                 dataset["entity_type"],

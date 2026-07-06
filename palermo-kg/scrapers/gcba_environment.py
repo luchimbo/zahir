@@ -16,9 +16,14 @@ import csv
 import io
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from scrapers.shared.db_helpers import (
     get_conn,
@@ -77,7 +82,6 @@ def parse_wkt_centroid(wkt: str) -> tuple[float | None, float | None]:
 def parse_geojson_centroid(geometry: dict) -> tuple[float | None, float | None]:
     if not geometry:
         return None, None
-    gtype = geometry.get("type", "")
     coords = geometry.get("coordinates", [])
     
     # Flatten geometry to find all points
