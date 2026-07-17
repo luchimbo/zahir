@@ -98,6 +98,20 @@ async def get_source_id(conn, source_name: str) -> str:
     return str(row["id"])
 
 
+async def ensure_source(conn, source_name: str, source_url: str, tier: int = 1) -> str:
+    """Crea la fuente oficial si el seed aún no se aplicó al entorno."""
+    return str(await conn.fetchval(
+        """INSERT INTO sources (source_name, source_url, tier) VALUES ($1, $2, $3)
+           ON CONFLICT (source_name) DO UPDATE SET source_url=EXCLUDED.source_url
+           RETURNING id""", source_name, source_url, tier
+    ))
+
+
+async def mark_source_synced(conn, source_id: str):
+    """Registra una ejecución exitosa sin alterar el historial de datos."""
+    await conn.execute("UPDATE sources SET scraped_at = now() WHERE id = $1", source_id)
+
+
 async def bulk_get_or_create_entities(conn, records: list[dict]) -> dict[str, str]:
     """
     Batch get-or-create para entidades canonicas del mismo entity_type.

@@ -30,6 +30,25 @@ INSERT INTO sources (source_name, source_url, tier) VALUES
 
 ON CONFLICT (source_name) DO NOTHING;
 
+INSERT INTO sources (source_name, source_url, tier) VALUES
+    ('refes_historical', 'https://datos.gob.ar/dataset/salud-listado-establecimientos-salud-asentados-registro-federal-refes', 4),
+    ('transporte_rmba', 'https://datos.gob.ar/dataset/transporte-recorridos-lineas-transporte-region-metropolitana-buenos-aires-rmba', 4),
+    ('cep_xxi', 'https://datos.gob.ar/dataset/produccion-distribucion-geografica-establecimientos-productivos', 4),
+    ('enacom_context', 'https://datos.gob.ar/dataset?organization=enacom', 4),
+    ('ceamse_context', 'https://portal-andino.datos.gob.ar/dataset/residuos-solidos-urbanos', 4),
+    ('national_monuments', 'https://www.argentina.gob.ar/cultura/monumentos', 4)
+ON CONFLICT (source_name) DO NOTHING;
+
+-- Fuentes nacionales y geoespaciales (ronda 3)
+INSERT INTO sources (source_name, source_url, tier) VALUES
+    ('georef', 'https://apis.datos.gob.ar/georef/api/v2.0', 1),
+    ('padron_educativo', 'https://www.argentina.gob.ar/node/246613', 1),
+    ('indec_censo', 'https://geonode.indec.gob.ar', 1),
+    ('ign', 'https://www.ign.gob.ar/NuestrasActividades/InformacionGeoespacial/ServiciosOGC', 1),
+    ('sinca', 'https://datos.gob.ar/dataset/cultura-mapa-cultural-espacios-culturales', 4),
+    ('refes', 'https://www.argentina.gob.ar/salud', 1)
+ON CONFLICT (source_name) DO NOTHING;
+
 -- Nuevas fuentes — ronda 2
 INSERT INTO sources (source_name, source_url, tier) VALUES
     -- Tier 1: APIs libres / datasets abiertos

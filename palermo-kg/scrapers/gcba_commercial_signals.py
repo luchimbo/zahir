@@ -32,6 +32,7 @@ from scrapers.shared.db_helpers import (
     bulk_upsert_properties,
     get_conn,
     get_source_id,
+    mark_source_synced,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
@@ -433,6 +434,7 @@ async def main():
                     continue
                 total += await func(conn, source_id, client)
                 await asyncio.sleep(0.5)
+        await mark_source_synced(conn, source_id)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")
     finally:
         await conn.close()

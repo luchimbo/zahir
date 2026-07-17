@@ -26,6 +26,7 @@ from scrapers.shared.db_helpers import (
     get_source_id,
     bulk_get_or_create_entities,
     bulk_upsert_properties,
+    mark_source_synced,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
@@ -310,6 +311,7 @@ async def main():
             total_priv = await scrape_obras_privadas(conn, source_id, client, limit=args.limit)
             await asyncio.sleep(1)
             total_pub = await scrape_obras_publicas(conn, source_id, client, limit=args.limit)
+        await mark_source_synced(conn, source_id)
             
         print(f"\n[OK] Scraper Obras finalizado con éxito. Total: {total_priv + total_pub} obras.")
     finally:
