@@ -899,6 +899,10 @@ p {
   gap: 10px;
 }
 
+.property-category { display: grid; gap: 10px; margin-bottom: 20px; }
+.property-category h3 { color: var(--muted); font-size: .82rem; letter-spacing: .08em; text-transform: uppercase; }
+.entity-warning { margin: 0 0 16px; padding: 10px 12px; border-left: 3px solid var(--orange); background: #fff0d8; color: #71491a; font-weight: 700; }
+
 .property-group > header {
   display: flex;
   align-items: center;

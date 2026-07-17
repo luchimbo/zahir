@@ -39,6 +39,8 @@ type EntityProperty = {
   confidence?: number | string | null;
   origins?: string[] | null;
   last_seen_at?: string | null;
+  source_name?: string | null;
+  source_url?: string | null;
 };
 
 type Relationship = {
@@ -49,6 +51,7 @@ type Relationship = {
   related_id: string;
   related_name: string;
   related_type: string;
+  relation_side?: "incoming" | "outgoing";
 };
 
 type EntityPayload = {
@@ -99,6 +102,16 @@ function groupProperties(properties: EntityProperty[]) {
     groups.set(property.key, rows);
   }
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+function propertyCategory(key: string) {
+  if (key.startsWith("urban_") || key.startsWith("buildable_") || ["hydric_risk", "heritage_catalogued", "future_widening", "future_opening"].includes(key)) return "Urbanismo y restricciones";
+  if (["address", "phone", "website", "neighborhood", "commune"].includes(key)) return "Ubicación y contacto";
+  if (key.startsWith("indec_") || key.startsWith("census_") || key === "population" || key === "households" || key === "dwellings") return "Demografía";
+  if (key.startsWith("school_") || key === "education_offer" || key === "education_level") return "Educación";
+  if (key.startsWith("historical_") || key === "sinca_category") return "Cultura histórica";
+  if (key === "geometry_geojson" || key.startsWith("georef_")) return "Geografía";
+  return "Datos verificados";
 }
 
 function collectSources(payload: EntityPayload | null) {
@@ -160,6 +173,14 @@ export default function EntityPage() {
     () => groupProperties(payload?.properties ?? []),
     [payload?.properties]
   );
+  const categorizedProperties = useMemo(() => {
+    const categories = new Map<string, Array<[string, EntityProperty[]]>>();
+    for (const group of propertyGroups) {
+      const category = propertyCategory(group[0]);
+      categories.set(category, [...(categories.get(category) ?? []), group]);
+    }
+    return [...categories.entries()];
+  }, [propertyGroups]);
   const sourceSummary = useMemo(() => collectSources(payload), [payload]);
 
   const entity = payload?.entity;
@@ -290,8 +311,14 @@ export default function EntityPage() {
                 <FileText size={17} aria-hidden />
                 Propiedades verificadas
               </h2>
+              {entity.entity_type === "HistoricalRecord" ? <p className="entity-warning">Registro histórico: no representa una actividad o estado actual.</p> : null}
+              {payload.properties.some((property) => property.source_name === "sinca") ? <p className="entity-warning">Datos culturales SINCA: fuente histórica; confirmar vigencia antes de usarla como estado actual.</p> : null}
+              {payload.properties.some((property) => ["refes_historical", "transporte_rmba", "cep_xxi", "enacom_context", "ceamse_context"].includes(property.source_name ?? "")) ? <p className="entity-warning">Dato histórico o agregado: verificar período y cobertura geográfica antes de interpretarlo como estado actual de Palermo.</p> : null}
               <div className="property-groups">
-                {propertyGroups.map(([key, rows]) => (
+                {categorizedProperties.map(([category, groups]) => (
+                  <div key={category} className="property-category">
+                    <h3>{category}</h3>
+                    {groups.map(([key, rows]) => (
                   <article key={key} className="property-group">
                     <header>
                       <strong>{key}</strong>
@@ -311,6 +338,7 @@ export default function EntityPage() {
                               visto {formatDate(property.last_seen_at)}
                             </span>
                           ) : null}
+                          {property.source_name ? <span>fuente: {property.source_name}</span> : null}
                         </div>
                         {property.origins?.length ? (
                           <div className="source-stack entity-sources">
@@ -326,6 +354,8 @@ export default function EntityPage() {
                       </div>
                     ))}
                   </article>
+                    ))}
+                  </div>
                 ))}
               </div>
             </section>
@@ -339,7 +369,7 @@ export default function EntityPage() {
                 <div className="relationship-list">
                   {payload.relationships.map((relationship) => (
                     <a key={`${relationship.relationship_type}-${relationship.related_id}`} href={`/entity/${relationship.related_id}`}>
-                      <span>{relationship.relationship_type}</span>
+                      <span>{relationship.relation_side === "incoming" ? "RECIBE" : relationship.relationship_type}</span>
                       <strong>{relationship.related_name}</strong>
                       <small>{relationship.related_type} · {formatConfidence(relationship.confidence)}</small>
                     </a>
