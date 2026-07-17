@@ -10,6 +10,8 @@ async def knowledge_query(
     entity_type: str | None = None,
     subtype:     str | None = None,
     tag:         str | None = None,
+    source:      str | None = None,
+    historical:  bool | None = None,
     limit:       int = Q(default=20, ge=1, le=100),
     offset:      int = Q(default=0, ge=0),
 ):
@@ -30,6 +32,16 @@ async def knowledge_query(
             params.append(subtype)
             conditions.append(f"e.subtype = ${len(params)}")
 
+        if source or historical is not None:
+            joins = " JOIN properties sp ON sp.entity_id = e.id JOIN sources ss ON ss.id = sp.source_id "
+            if source:
+                params.append(source); conditions.append(f"ss.source_name = ${len(params)}")
+            if historical is not None:
+                params.append(historical)
+                conditions.append(f"(${len(params)} OR (sp.valid_until IS NULL AND ss.source_name != 'sinca'))")
+        else:
+            joins = ""
+
         where = " AND ".join(conditions)
 
         if tag:
@@ -37,7 +49,7 @@ async def knowledge_query(
             sql = f"""
                 SELECT DISTINCT e.id, e.name, e.entity_type, e.subtype,
                        e.lat, e.lng, e.importance, e.description
-                FROM entities e
+                FROM entities e {joins}
                 JOIN tags t ON t.entity_id = e.id
                 WHERE {where} AND t.tag = ${len(params)}
                 ORDER BY e.importance DESC
@@ -47,7 +59,7 @@ async def knowledge_query(
             sql = f"""
                 SELECT e.id, e.name, e.entity_type, e.subtype,
                        e.lat, e.lng, e.importance, e.description
-                FROM entities e
+                FROM entities e {joins}
                 WHERE {where}
                 ORDER BY e.importance DESC
                 LIMIT {limit} OFFSET {offset}

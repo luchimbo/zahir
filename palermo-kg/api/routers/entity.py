@@ -17,7 +17,12 @@ async def entity_search(name: str = Query(..., min_length=2)):
 
 
 @router.get("/entity/{entity_id}")
-async def retrieve_entity(entity_id: str):
+async def retrieve_entity(
+    entity_id: str,
+    include_history: bool = Query(default=False),
+    source: str | None = Query(default=None),
+    historical: bool | None = Query(default=None),
+):
     """Entidad completa por UUID: datos, propiedades activas y relaciones."""
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -33,22 +38,27 @@ async def retrieve_entity(entity_id: str):
 
         props = await conn.fetch(
             """
-            SELECT key, value, value_type, valid_from, valid_until,
-                   confidence, origins, last_seen_at
-            FROM active_properties
-            WHERE entity_id = $1
-            ORDER BY key
+            SELECT p.key, p.value, p.value_type, p.valid_from, p.valid_until,
+                   p.confidence, p.origins, p.last_seen_at, s.source_name, s.source_url
+            FROM properties p
+            LEFT JOIN sources s ON s.id = p.source_id
+            WHERE p.entity_id = $1
+              AND ($2::boolean OR p.valid_until IS NULL OR p.valid_until > CURRENT_DATE)
+              AND ($3::text IS NULL OR s.source_name = $3)
+              AND ($4::boolean IS NULL OR ($4 AND (p.valid_until IS NOT NULL OR s.source_name = 'sinca')) OR (NOT $4 AND p.valid_until IS NULL AND COALESCE(s.source_name, '') != 'sinca'))
+            ORDER BY p.key, p.valid_from DESC NULLS LAST
             """,
-            entity_id
+            entity_id, include_history, source, historical
         )
 
         rels = await conn.fetch(
             """
             SELECT r.relationship_type, r.direction, r.weight, r.confidence,
-                   e.id AS related_id, e.name AS related_name, e.entity_type AS related_type
+                   e.id AS related_id, e.name AS related_name, e.entity_type AS related_type,
+                   CASE WHEN r.from_entity_id = $1 THEN 'outgoing' ELSE 'incoming' END AS relation_side
             FROM relationships r
-            JOIN entities e ON e.id = r.to_entity_id
-            WHERE r.from_entity_id = $1
+            JOIN entities e ON e.id = CASE WHEN r.from_entity_id = $1 THEN r.to_entity_id ELSE r.from_entity_id END
+            WHERE r.from_entity_id = $1 OR r.to_entity_id = $1
             """,
             entity_id
         )
