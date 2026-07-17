@@ -1,18 +1,20 @@
 # Retomar Palermo Knowledge Graph
 
-Estado consolidado: 2026-07-06.
+Estado consolidado: 2026-07-17.
 
 ## Estado actual
 
 Palermo Knowledge Graph ya tiene una v1 funcional:
 
 - Schema PostgreSQL desplegado en Neon.
-- API FastAPI con endpoints de health, search, search natural, entity, query e insights.
+- API FastAPI con endpoints de health, search, search natural, entity, query e insights (query-gaps, query-summary, source-health, data-quality).
 - Frontend Next.js conectado a la API local/proxy.
+- Vista de entidad con propiedades categorizadas, fuente por propiedad, historial y warnings para fuentes históricas.
 - Respuestas naturales con citas reales en `/api/search/natural`.
 - Fallback extractivo local cuando no hay `OPENROUTER_API_KEY`.
 - Query log para detectar gaps de cobertura.
 - Scrapers oficiales y semi-estructurados para GCBA, OSM, Wikidata, IGJ, BCRA, Google Places y Boletín Oficial.
+- Scrapers nacionales y geoespaciales (INDEC, REFES, SINCA, transporte RMBA, ENACOM, CEAMSE, CEP XXI, educación, monumentos) con refresh manual vía `scripts/refresh_official_sources.py`.
 
 Estado de referencia de la DB documentado en la última verificación:
 
@@ -130,17 +132,19 @@ npm run smoke
 - `GET /api/search?q=texto`
 - `GET /api/search/natural?q=texto`
 - `GET /api/entity/search?name=texto`
-- `GET /api/entity/{uuid}`
+- `GET /api/entity/{uuid}` (params: `include_history`, `source`, `historical`)
 - `GET /api/entity/{uuid}/{key}`
-- `GET /api/query`
+- `GET /api/query` (incluye filtros `source`, `historical`)
 - `GET /api/insights/query-gaps`
 - `GET /api/insights/query-summary`
+- `GET /api/insights/source-health`
+- `GET /api/insights/data-quality`
 
 ## Próximo paso recomendado
 
 Después de esta consolidación:
 
-1. Mejorar vista de entidad en frontend agrupando propiedades por fuente, fecha y confianza.
-2. Agregar tests automatizados más finos para ranking.
-3. Revisar cobertura de gaps reales desde `/api/insights/query-gaps`.
+1. Tests automatizados con pytest (contrato de API, ranking y búsqueda natural).
+2. Revisar cobertura de gaps reales desde `/api/insights/query-gaps`.
+3. Revisar calidad de datos desde `/api/insights/data-quality` y `scripts/source_audit.py`.
 4. Recién después evaluar nuevas fuentes.

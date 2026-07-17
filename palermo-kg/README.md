@@ -25,6 +25,7 @@ Un LLM general puede alucinar nombres, direcciones, precios o estados legales. E
 | Frontend Next.js | Funcional local/Vercel |
 | Query log e insights | Funcional |
 | Scrapers GCBA/OSM/Wikidata/IGJ/BCRA/Google Places | Implementados |
+| Scrapers nacionales/geoespaciales (INDEC, REFES, SINCA, RMBA, ENACOM...) | Implementados, refresh manual |
 | Scrapers inmobiliarios | Pausados |
 
 La referencia operativa actual verificada es de 46.711 entidades canónicas activas. Para verificar el estado real de la DB:
@@ -85,11 +86,13 @@ Agente IA
 | `GET /api/search?q=texto` | Búsqueda estructurada con scoring |
 | `GET /api/search/natural?q=texto` | Respuesta natural con citas reales |
 | `GET /api/entity/search?name=texto` | Búsqueda fuzzy de entidad |
-| `GET /api/entity/{uuid}` | Entidad completa |
+| `GET /api/entity/{uuid}` | Entidad completa (params: `include_history`, `source`, `historical`) |
 | `GET /api/entity/{uuid}/{key}` | Propiedad específica |
-| `GET /api/query` | Consulta tabular por filtros |
+| `GET /api/query` | Consulta tabular por filtros (incluye `source`, `historical`) |
 | `GET /api/insights/query-gaps` | Consultas sin resultados |
 | `GET /api/insights/query-summary` | Resumen de uso reciente |
+| `GET /api/insights/source-health` | Frescura y cobertura por fuente |
+| `GET /api/insights/data-quality` | Indicadores de calidad accionables |
 
 `/api/search/natural` mantiene este contrato:
 

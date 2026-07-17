@@ -66,6 +66,30 @@ No ejecutar estos frentes hasta que el usuario los reactive explícitamente:
 | `igj.py` | Sociedades | Activo |
 | `bcra_sucursales.py` | Bancos/cajeros | Activo |
 | `boletin_oficial.py` | Boletín Oficial CABA | Implementado |
+| `gcba_accessibility_ramps.py` | Rampas de accesibilidad | Implementado, refresh manual |
+| `gcba_civil_registry.py` | Registro civil | Implementado, refresh manual |
+| `gcba_clubs.py` | Clubes | Implementado, refresh manual |
+| `gcba_community_institutions.py` | Instituciones comunitarias | Implementado, refresh manual |
+| `gcba_cultural_archive.py` | Archivo cultural | Implementado, refresh manual |
+| `gcba_healthy_stations.py` | Estaciones saludables | Implementado, refresh manual |
+| `gcba_inspections.py` | Inspecciones AGC | Implementado, refresh manual |
+| `gcba_labor_integration.py` | Integración laboral | Implementado, refresh manual |
+| `gcba_libraries.py` | Bibliotecas | Implementado, refresh manual |
+| `gcba_nightlife_events.py` | Vida nocturna | Implementado, refresh manual |
+| `gcba_places_of_worship.py` | Lugares de culto | Implementado, refresh manual |
+| `gcba_police_stations.py` | Comisarías | Implementado, refresh manual |
+| `gcba_urban_code.py` | Código urbanístico | Implementado, refresh manual |
+| `gcba_urban_planning.py` | Planeamiento urbano | Implementado, refresh manual |
+| `indec_census.py` | Censo INDEC por radio | Implementado, refresh manual |
+| `national_education.py` | Padrón educativo nacional | Implementado, refresh manual |
+| `national_monuments.py` | Monumentos nacionales | Desactivado (sin descarga validada) |
+| `refes_historical.py` | REFES salud histórico | Implementado, solo validación histórica |
+| `sinca_culture.py` | Espacios culturales SINCA | Implementado, fuente histórica |
+| `transporte_rmba.py` | Red transporte RMBA | Implementado, refresh manual |
+| `ceamse_context.py` / `cep_xxi.py` / `enacom_context.py` | Contexto agregado | Implementado, refresh manual |
+| `link_agc_inspections.py` | Vínculo inspecciones-entidades | Implementado |
+
+El refresh manual de estas fuentes se orquesta con `scripts/refresh_official_sources.py` y se audita con `scripts/source_audit.py` o `GET /api/insights/source-health`.
 
 ## Roadmap recomendado
 
@@ -78,10 +102,10 @@ No ejecutar estos frentes hasta que el usuario los reactive explícitamente:
 
 ### Fase 2 - Producto
 
-- Mejorar vista de entidad agrupando propiedades por fuente, fecha y confianza.
-- Agregar navegación desde resultados hacia detalle de entidad dentro del frontend.
-- Mostrar historial de propiedades cuando aplique.
-- Exponer relaciones relevantes de forma legible.
+- ~~Mejorar vista de entidad agrupando propiedades por fuente, fecha y confianza~~ (hecho: categorías, fuente por propiedad, warnings históricos).
+- ~~Agregar navegación desde resultados hacia detalle de entidad dentro del frontend~~ (hecho).
+- Mostrar historial de propiedades cuando aplique (API ya soporta `include_history`; falta UI).
+- Exponer relaciones relevantes de forma legible (API ya distingue incoming/outgoing; falta pulir UI).
 
 ### Fase 3 - Calidad de datos
 

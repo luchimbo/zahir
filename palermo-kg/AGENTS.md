@@ -29,13 +29,21 @@ Todos los scrapers siguen este patrón:
 ```
 scrapers/
   shared/
-    db_helpers.py     # upsert_entity(), upsert_property(), upsert_relationship()
+    db_helpers.py     # upsert_entity(), upsert_property(), upsert_relationship(), ensure_source(), mark_source_synced()
     normalizer.py     # normalize_name(), normalize_value()
-  gcba_ba_data.py     # ✅ BA Data GCBA
-  google_places.py    # ✅ Google Places
-  zonaprop.py         # ⏳ en progreso
-  igj.py              # ⏳ en progreso
-  boletin_oficial.py  # ⏳ en progreso
+    georef.py         # API georef nacional (respaldo de USIG)
+    usig.py           # georreferenciación USIG CABA
+  gcba_*.py           # ✅ fuentes GCBA (ba_data, mobility, environment, culture, obras...)
+  google_places.py    # ✅ Google Places (requiere API key)
+  osm_palermo.py      # ✅ OpenStreetMap
+  wikidata_ba.py      # ✅ Wikidata
+  igj.py              # ✅ IGJ
+  boletin_oficial.py  # ✅ Boletín Oficial CABA
+  indec_census.py     # ✅ Censo INDEC
+  sinca_culture.py    # ✅ SINCA (fuente histórica)
+  *_context.py        # ✅ contexto nacional agregado (CEAMSE, CEP XXI, ENACOM)
+  zonaprop.py         # ⛔ pausado — no correr sin aprobación
+  argenprop.py        # ⛔ pausado — no correr sin aprobación
   entity_resolver.py  # deduplicación cross-source
 ```
 
@@ -102,10 +110,15 @@ La API corre en `http://localhost:8000` con `python -m uvicorn api.main:app --re
 |---|---|
 | `GET /health` | Estado de la DB |
 | `GET /api/search?q=texto` | Búsqueda full-text en entidades |
+| `GET /api/search/natural?q=texto` | Respuesta natural con citas (fallback extractivo sin `OPENROUTER_API_KEY`) |
 | `GET /api/entity/search?name=texto` | Búsqueda por nombre exacto |
-| `GET /api/entity/{uuid}` | Detalle de entidad con todas sus propiedades activas |
+| `GET /api/entity/{uuid}` | Detalle de entidad con propiedades activas (params: `include_history`, `source`, `historical`) |
 | `GET /api/entity/{uuid}/{key}` | Valor de una propiedad específica |
-| `GET /api/query` | Query SQL raw (solo lectura) |
+| `GET /api/query` | Query tabular por filtros (tipo, subtipo, tag, `source`, `historical`) |
+| `GET /api/insights/query-gaps` | Consultas sin resultados |
+| `GET /api/insights/query-summary` | Resumen de uso |
+| `GET /api/insights/source-health` | Frescura y cobertura por fuente |
+| `GET /api/insights/data-quality` | Indicadores de calidad (duplicados, sin coords, propiedades vencidas) |
 
 Todos los endpoints filtran `canonical_id IS NULL` automáticamente.
 
@@ -134,12 +147,12 @@ El agente responde preguntas sobre Palermo usando la API como única fuente de v
 
 ---
 
-## Retroalimentación (Fase 2 — pendiente)
+## Retroalimentación
 
-Cuando esté implementado el `query_log`:
-- Loguear toda consulta con: `query_text`, `result_count`, `entity_types_returned`, `timestamp`
-- Queries con `result_count = 0` → encolar para scraping dirigido
-- Cross-validation entre fuentes para ajustar `confidence`
+El `query_log` ya está implementado:
+- Toda consulta se loguea con: `query_text`, `result_count`, `entity_types_returned`, `timestamp`
+- Queries con `result_count = 0` → revisar en `/api/insights/query-gaps` para scraping dirigido
+- Pendiente: cross-validation entre fuentes para ajustar `confidence`
 
 ---
 
