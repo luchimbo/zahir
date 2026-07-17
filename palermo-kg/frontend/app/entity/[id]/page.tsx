@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   Tags
 } from "lucide-react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -149,8 +150,6 @@ export default function EntityPage() {
 
   useEffect(() => {
     let disposed = false;
-    setPhase("loading");
-    setError(null);
 
     fetchJson<EntityPayload>(`/api/kg/entity/${entityId}`)
       .then((nextPayload) => {
@@ -191,10 +190,10 @@ export default function EntityPage() {
   return (
     <main className="kg-page">
       <nav className="topbar" aria-label="Breadcrumb">
-        <a className="back-link" href="/">
+        <Link className="back-link" href="/">
           <ArrowLeft size={15} aria-hidden />
           Search
-        </a>
+        </Link>
         <span>/</span>
         <span>Entity</span>
         <span>/</span>
