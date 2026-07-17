@@ -17,6 +17,7 @@ class GeocodedAddress:
     number: int
     lat: float
     lng: float
+    backend: str = "usig"
 
 
 def split_street_number(address: str) -> tuple[str, int] | None:
@@ -34,19 +35,19 @@ async def geocode_address(client: httpx.AsyncClient, address: str) -> GeocodedAd
     parsed = split_street_number(address)
     if not parsed:
         fallback = await georef_address(client, address)
-        return GeocodedAddress(address, 0, fallback.lat, fallback.lng) if fallback else None
+        return GeocodedAddress(address, 0, fallback.lat, fallback.lng, "georef") if fallback else None
     street, number = parsed
     response = await client.get(GEOCODER_URL, params={"cod_calle": street, "altura": number})
     if response.status_code != 200:
         fallback = await georef_address(client, address)
-        return GeocodedAddress(street, number, fallback.lat, fallback.lng) if fallback else None
+        return GeocodedAddress(street, number, fallback.lat, fallback.lng, "georef") if fallback else None
     try:
         # USIG alterna entre JSON puro y un objeto envuelto en paréntesis.
         gkba = response.json() if response.text.lstrip().startswith("{") else json.loads(response.text.strip().strip("()"))
         x, y = gkba["x"], gkba["y"]
     except (TypeError, KeyError, ValueError):
         fallback = await georef_address(client, address)
-        return GeocodedAddress(street, number, fallback.lat, fallback.lng) if fallback else None
+        return GeocodedAddress(street, number, fallback.lat, fallback.lng, "georef") if fallback else None
     response = await client.get(CONVERTER_URL, params={"x": x, "y": y, "output": "lonlat"})
     if response.status_code != 200:
         fallback = await georef_address(client, address)
