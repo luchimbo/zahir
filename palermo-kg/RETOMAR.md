@@ -97,6 +97,15 @@ Smoke búsqueda/citas:
 .\.venv\Scripts\python scripts\smoke_search_citations.py
 ```
 
+Tests automatizados (pytest, contrato de API + normalizer + filtros):
+
+```powershell
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m pytest
+```
+
+Los tests de API corren contra la DB real en modo solo-lectura y se saltan si no hay `DATABASE_URL`.
+
 Aplicar migraciones:
 
 ```powershell
@@ -144,7 +153,7 @@ npm run smoke
 
 Después de esta consolidación:
 
-1. Tests automatizados con pytest (contrato de API, ranking y búsqueda natural).
-2. Revisar cobertura de gaps reales desde `/api/insights/query-gaps`.
-3. Revisar calidad de datos desde `/api/insights/data-quality` y `scripts/source_audit.py`.
+1. Revisar cobertura de gaps reales desde `/api/insights/query-gaps`.
+2. Revisar calidad de datos desde `/api/insights/data-quality` y `scripts/source_audit.py`.
+3. Agregar tests de ranking más finos (scores esperados para queries conocidas).
 4. Recién después evaluar nuevas fuentes.

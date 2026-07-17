@@ -148,6 +148,13 @@ Checks:
 .\.venv\Scripts\python scripts\smoke_search_citations.py
 ```
 
+Tests automatizados (requieren `requirements-dev.txt`; los de API leen la DB real y se saltan sin `DATABASE_URL`):
+
+```powershell
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m pytest
+```
+
 Frontend build/smoke:
 
 ```powershell
