@@ -37,7 +37,7 @@ except ImportError:
     print("[WARNING] PyMuPDF no instalado. Instalar con: pip install pymupdf")
 
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    ensure_source, get_conn, get_or_create_entity, mark_source_synced, upsert_property
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value, clean_cuit
 
@@ -62,11 +62,12 @@ PALERMO_KEYWORDS = re.compile(
 # API del Boletín Oficial
 BOLETIN_API   = "https://www.boletinoficial.gob.ar/norma/listado"
 BOLETIN_PDF   = "https://www.boletinoficial.gob.ar/pdf/linkQR/MTAwMDU="  # template
+MAX_PUBLICATIONS_PER_DAY = max(1, min(int(os.getenv("BOLETIN_MAX_PUBLICATIONS", "5")), 20))
 
 
 # ── Descarga de PDFs ──────────────────────────────────────────────────────────
 
-async def fetch_publicaciones(fecha: str) -> list[dict]:
+async def fetch_publicaciones(fecha: str) -> list[dict] | None:
     """
     Consulta publicaciones del Boletín para una fecha (YYYY-MM-DD).
     Devuelve lista de {id, titulo, seccion, pdf_url}.
@@ -77,12 +78,12 @@ async def fetch_publicaciones(fecha: str) -> list[dict]:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             r = await client.get(url, headers=headers)
             if r.status_code != 200:
-                return []
+                return None
             data = r.json()
             return data.get("avisos", data.get("normas", []))
     except Exception as e:
         print(f"  [error] API Boletín: {e}")
-        return []
+        return None
 
 
 async def download_pdf(pub_id: str, pdf_url: str) -> bytes | None:
@@ -220,24 +221,29 @@ async def insert_entidad(conn, entidad: dict, source_id: str, origen_url: str):
 async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
     if not HAS_PYMUPDF:
         print("  [skip] PyMuPDF no disponible. Instalar con: pip install pymupdf")
-        return
+        return False
 
     today = date.today()
     fechas = [(today - timedelta(days=i)).isoformat() for i in range(dias_atras)]
 
     total_entidades = 0
+    completed = True
 
     for fecha in fechas:
         print(f"\n-> Procesando Boletin del {fecha}...")
 
         publicaciones = await fetch_publicaciones(fecha)
+        if publicaciones is None:
+            completed = False
+            print(f"  API no respondió en formato esperado")
+            continue
         if not publicaciones:
             print(f"  Sin publicaciones o API no respondió")
             continue
 
         print(f"  {len(publicaciones)} publicaciones encontradas")
 
-        for pub in publicaciones[:20]:  # límite por día para no saturar
+        for pub in publicaciones[:MAX_PUBLICATIONS_PER_DAY]:
             pub_id  = str(pub.get("id") or pub.get("nroNorma") or "")
             pdf_url = pub.get("pdf_url") or pub.get("urlPdf") or ""
 
@@ -265,6 +271,7 @@ async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
                     total_entidades += 1
 
     print(f"\n  [OK] {total_entidades} entidades del Boletin Oficial procesadas")
+    return completed
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -280,23 +287,12 @@ async def main():
 
     conn = await get_conn()
     try:
-        # Agregar fuente si no existe
-        existing = await conn.fetchval(
-            "SELECT id FROM sources WHERE source_name = 'boletin_oficial'"
-        )
-        if not existing:
-            await conn.execute(
-                """
-                INSERT INTO sources (source_name, source_url, tier, is_reliable)
-                VALUES ('boletin_oficial', 'https://www.boletinoficial.gob.ar', 3, true)
-                ON CONFLICT DO NOTHING
-                """
-            )
-
-        source_id = await conn.fetchval(
-            "SELECT id::text FROM sources WHERE source_name = 'boletin_oficial'"
-        )
-        await scrape_boletin(conn, source_id, dias_atras=args.dias)
+        source_id = await ensure_source(conn, "boletin_oficial", "https://www.boletinoficial.gob.ar", 3)
+        completed = await scrape_boletin(conn, source_id, dias_atras=args.dias)
+        if completed:
+            await mark_source_synced(conn, source_id)
+        else:
+            print("Boletín incompleto: la fuente queda pendiente.")
         print("\n[OK] Scraper finalizado")
     finally:
         await conn.close()

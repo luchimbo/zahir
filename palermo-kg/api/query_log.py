@@ -1,3 +1,4 @@
+import json
 from api.db import get_pool
 
 
@@ -30,7 +31,7 @@ async def log_query(
                 subtype,
                 tag,
                 result_count,
-                entity_types_returned or [],
+                json.dumps(entity_types_returned or []),
                 source,
             )
     except Exception:

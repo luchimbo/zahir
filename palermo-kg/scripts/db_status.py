@@ -1,32 +1,30 @@
-"""Estado actual de la DB."""
-import asyncio, os
-import asyncpg
-from dotenv import load_dotenv
-load_dotenv()
+"""Estado operativo de TiDB para el Knowledge Graph."""
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from api.db import close_pool, get_pool
+
 
 async def main():
-    conn = await asyncpg.connect(dsn=os.getenv("DATABASE_URL"))
-    total = await conn.fetchval("SELECT COUNT(*) FROM entities WHERE canonical_id IS NULL")
-    rows = await conn.fetch(
-        "SELECT entity_type, subtype, COUNT(*) as n FROM entities "
-        "WHERE canonical_id IS NULL GROUP BY entity_type, subtype ORDER BY n DESC LIMIT 25"
-    )
-    sources = await conn.fetch(
-        "SELECT s.source_name, COUNT(p.id) as props FROM sources s "
-        "LEFT JOIN properties p ON p.source_id = s.id "
-        "GROUP BY s.source_name ORDER BY props DESC LIMIT 15"
-    )
-    await conn.close()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM entities WHERE canonical_id IS NULL")
+        rows = await conn.fetch("""SELECT entity_type, subtype, COUNT(*) AS n FROM entities
+            WHERE canonical_id IS NULL GROUP BY entity_type, subtype ORDER BY n DESC LIMIT 25""")
+        sources = await conn.fetch("""SELECT s.source_name, COUNT(p.id) AS props, s.scraped_at
+            FROM sources s LEFT JOIN properties p ON p.source_id=s.id
+            GROUP BY s.id, s.source_name, s.scraped_at ORDER BY props DESC LIMIT 15""")
+    await close_pool()
+    print(f"\nTotal entidades canónicas: {total}\n")
+    for row in rows:
+        print(f"{row['entity_type']:<16} {(row['subtype'] or ''):<22} {row['n']:>6}")
+    print("\nFuentes:")
+    for row in sources:
+        print(f"{row['source_name']:<25} {row['props']:>6}  {row['scraped_at'] or 'pendiente'}")
 
-    print(f"\nTotal entidades canonicas: {total}\n")
-    print(f"{'Tipo':<16} {'Subtype':<22} {'Count':>6}")
-    print("-" * 46)
-    for r in rows:
-        print(f"{r['entity_type']:<16} {(r['subtype'] or ''):<22} {r['n']:>6}")
 
-    print(f"\n{'Fuente':<25} {'Propiedades':>12}")
-    print("-" * 38)
-    for r in sources:
-        print(f"{r['source_name']:<25} {r['props']:>12}")
-
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

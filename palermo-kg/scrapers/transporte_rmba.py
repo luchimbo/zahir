@@ -1,5 +1,5 @@
 """Estaciones de subte de Transporte Nación que caen dentro de Palermo."""
-import argparse, asyncio, xml.etree.ElementTree as ET
+import argparse, asyncio, json, xml.etree.ElementTree as ET
 import httpx
 from scrapers.shared.db_helpers import ensure_source,get_conn,get_or_create_entity,mark_source_synced,upsert_property
 from scrapers.shared.normalizer import normalize_name
@@ -21,12 +21,12 @@ async def main():
  if not args.write:return
  conn=await get_conn()
  try:
-  source=await ensure_source(conn,"transporte_rmba",ORIGIN,4); palermo=await conn.fetchval("SELECT id FROM entities WHERE entity_type='Location' AND name ILIKE '%Palermo%' AND canonical_id IS NULL LIMIT 1")
+  source=await ensure_source(conn,"transporte_rmba",ORIGIN,4); palermo=await conn.fetchval("SELECT id FROM entities WHERE entity_type='Location' AND LOWER(name) LIKE '%palermo%' AND canonical_id IS NULL LIMIT 1")
   for name,lat,lng in stations:
    entity=await get_or_create_entity(conn,normalize_name(name),"Transport","subte_station",lat,lng,origin_url=ORIGIN)
    await upsert_property(conn,entity,"historical_status","Historical Transport Network","string",source,[ORIGIN],.7)
    if palermo: await conn.execute("""INSERT INTO relationships(from_entity_id,relationship_type,to_entity_id,confidence,origins,direction)
-    SELECT $1,'CONNECTS_TO',$2,.7,$3,'directed' WHERE NOT EXISTS(SELECT 1 FROM relationships WHERE from_entity_id=$1 AND relationship_type='CONNECTS_TO' AND to_entity_id=$2)""",entity,palermo,[ORIGIN])
+    SELECT $1,'CONNECTS_TO',$2,.7,$3,'directed' WHERE NOT EXISTS(SELECT 1 FROM relationships WHERE from_entity_id=$1 AND relationship_type='CONNECTS_TO' AND to_entity_id=$2)""",entity,palermo,json.dumps([ORIGIN]))
   await mark_source_synced(conn,source)
  finally:await conn.close()
 if __name__=="__main__":asyncio.run(main())

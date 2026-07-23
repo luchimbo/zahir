@@ -14,7 +14,7 @@ import asyncio
 import traceback
 import httpx
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    get_conn, get_or_create_entity, upsert_property, get_source_id, mark_source_synced
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
@@ -26,6 +26,7 @@ HEADERS = {
 
 # QID de Buenos Aires en Wikidata
 BA_QID = "Q1486"
+PALERMO_BBOX = (-34.610, -34.558, -58.450, -58.395)
 
 # Usamos wdt:P131 wd:Q1486 (directo) en lugar de P131* (recursivo) para evitar timeout.
 # Buenos Aires (Q1486) cubre la mayoria de entidades directamente.
@@ -100,18 +101,26 @@ def parse_coord(coord_str: str):
         return None, None
 
 
+def in_palermo(lat, lng) -> bool:
+    if lat is None or lng is None:
+        return False
+    south, north, west, east = PALERMO_BBOX
+    return south <= lat <= north and west <= lng <= east
+
+
 async def run_query(client: httpx.AsyncClient, sparql: str) -> list:
-    r = await client.get(
-        SPARQL_URL,
-        params={"query": sparql},
-        headers=HEADERS,
-        timeout=30,
-    )
+    for attempt in range(3):
+        r = await client.get(SPARQL_URL, params={"query": sparql}, headers=HEADERS, timeout=30)
+        if r.status_code != 429:
+            r.raise_for_status()
+            return r.json().get("results", {}).get("bindings", [])
+        await asyncio.sleep(10 * (attempt + 1))
     r.raise_for_status()
-    return r.json().get("results", {}).get("bindings", [])
+    return []
 
 
 async def scrape(conn, source_id: str):
+    completed = True
     async with httpx.AsyncClient(follow_redirects=True) as client:
         for category, (entity_type, subtype, sparql) in QUERIES.items():
             print(f"-> Wikidata: {category}...")
@@ -120,6 +129,7 @@ async def scrape(conn, source_id: str):
             except Exception as e:
                 print(f"  ERROR {category}: {type(e).__name__}: {e}")
                 traceback.print_exc()
+                completed = False
                 continue
 
             count = 0
@@ -131,6 +141,8 @@ async def scrape(conn, source_id: str):
                 name = normalize_name(label)
                 qid = row.get("item", {}).get("value", "").split("/")[-1]
                 lat, lng = parse_coord(row.get("coord", {}).get("value", ""))
+                if not in_palermo(lat, lng):
+                    continue
                 website = row.get("website", {}).get("value", "")
                 desc = row.get("desc", {}).get("value", "")
                 founded = row.get("founded", {}).get("value", "")
@@ -145,6 +157,7 @@ async def scrape(conn, source_id: str):
                     lng=lng,
                     description=desc or None,
                     origin_url=f"https://www.wikidata.org/wiki/{qid}" if qid else None,
+                    source_id=source_id, external_id=qid or None,
                 )
 
                 props = {
@@ -162,13 +175,18 @@ async def scrape(conn, source_id: str):
 
             print(f"  OK {category}: {count} entidades")
             await asyncio.sleep(1)
+    return completed
 
 
 async def main():
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "wikidata")
-        await scrape(conn, source_id)
+        completed = await scrape(conn, source_id)
+        if completed:
+            await mark_source_synced(conn, source_id)
+        else:
+            print("Wikidata incompleto: la fuente queda pendiente para reintento.")
     finally:
         await conn.close()
 

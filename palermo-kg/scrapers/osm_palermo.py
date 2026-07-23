@@ -10,7 +10,7 @@ import asyncio
 import urllib.parse
 import httpx
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    get_conn, get_or_create_entity, upsert_property, get_source_id, mark_source_synced
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
@@ -122,6 +122,7 @@ async def scrape(conn, source_id):
             conn, name=name, entity_type=entity_type, subtype=subtype,
             lat=el.get("lat"), lng=el.get("lon"),
             origin_url=f"https://www.openstreetmap.org/node/{el['id']}",
+            source_id=source_id, external_id=f"node/{el['id']}",
         )
 
         for key, value, vtype in [
@@ -149,6 +150,7 @@ async def main():
     try:
         source_id = await get_source_id(conn, "osm")
         await scrape(conn, source_id)
+        await mark_source_synced(conn, source_id)
     finally:
         await conn.close()
 

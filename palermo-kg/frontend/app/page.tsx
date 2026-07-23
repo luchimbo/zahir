@@ -17,9 +17,11 @@ import {
 import { FormEvent, useMemo, useState } from "react";
 
 import CoordinateMap from "../components/CoordinateMap";
+import ExplorerPanel from "../components/ExplorerPanel";
 import Explainability from "../components/Explainability";
 import GraphLoader from "../components/GraphLoader";
 import MentionedEntities from "../components/MentionedEntities";
+import OperationsPanel from "../components/OperationsPanel";
 import StructuredResults from "../components/StructuredResults";
 import { fetchJson } from "../lib/api";
 import { deriveExplainability, deriveMentioned } from "../lib/derive";
@@ -194,13 +196,17 @@ export default function Home() {
         </form>
 
         {phase === "idle" ? (
-          <div className="suggestion-stack" aria-label="Preguntas sugeridas">
-            {SUGGESTIONS.map((item) => (
-              <button key={item} type="button" onClick={() => void submitSearch(item)}>
-                {item}
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="suggestion-stack" aria-label="Preguntas sugeridas">
+              {SUGGESTIONS.map((item) => (
+                <button key={item} type="button" onClick={() => void submitSearch(item)}>
+                  {item}
+                </button>
+              ))}
+            </div>
+            <ExplorerPanel />
+            <OperationsPanel />
+          </>
         ) : null}
 
         {phase === "loading" ? <GraphLoader /> : null}

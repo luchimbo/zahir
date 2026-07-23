@@ -8,7 +8,7 @@ Instrucciones para agentes IA que operan sobre este repositorio.
 
 Knowledge graph hiper-local sobre Palermo, Buenos Aires. Base de datos de entidades verificadas (negocios, inmuebles, transporte, cultura, salud, educación, etc.) para que un agente IA pueda responder preguntas sobre el barrio sin alucinar.
 
-Stack: Neon PostgreSQL · FastAPI · Python scrapers · Next.js (pendiente)
+Stack: TiDB Cloud (MySQL 8 compatible) · FastAPI · Python scrapers · Next.js
 
 ---
 
@@ -159,7 +159,7 @@ El `query_log` ya está implementado:
 ## Variables de entorno necesarias
 
 ```
-DATABASE_URL=postgresql://...  # Neon PostgreSQL
+DATABASE_URL=mysql://...  # TiDB Cloud
 GOOGLE_PLACES_API_KEY=...
 FOURSQUARE_API_KEY=...         # (futuro)
 ```

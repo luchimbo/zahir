@@ -17,11 +17,12 @@ Datasets:
 import asyncio
 import httpx
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
 CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
+PALERMO_BBOX = (-34.610, -34.558, -58.450, -58.395)
 
 DATASETS = [
     {
@@ -75,6 +76,13 @@ BOOLEAN_KEYS = {"is_free"}
 URL_KEYS = {"website"}
 
 
+def in_palermo(lat, lng) -> bool:
+    if lat is None or lng is None:
+        return False
+    south, north, west, east = PALERMO_BBOX
+    return south <= float(lat) <= north and west <= float(lng) <= east
+
+
 def get_val(props, keys):
     for k in keys:
         v = props.get(k)
@@ -125,6 +133,8 @@ async def scrape_dataset(conn, source_id, dataset):
     subtype_key = dataset.get("subtype_key")
     subtype_map = dataset.get("subtype_map", {})
     count = 0
+    entity_records = []
+    property_records = []
 
     for f in features:
         props = f.get("properties") or {}
@@ -160,13 +170,13 @@ async def scrape_dataset(conn, source_id, dataset):
         except (TypeError, ValueError):
             lat, lng = None, None
 
-        entity_id = await get_or_create_entity(
-            conn, name=name,
-            entity_type=dataset["entity_type"],
-            subtype=subtype,
-            lat=lat, lng=lng,
-            origin_url=dataset["url"],
-        )
+        if not in_palermo(lat, lng):
+            continue
+
+        entity_records.append({
+            "name": name, "entity_type": dataset["entity_type"], "subtype": subtype,
+            "lat": lat, "lng": lng, "origin_url": dataset["url"],
+        })
 
         for prop_key, source_keys in dataset.get("props", {}).items():
             value = get_val(props, source_keys)
@@ -188,10 +198,16 @@ async def scrape_dataset(conn, source_id, dataset):
                 vtype = "string"
                 value = normalize_value(value)
 
-            await upsert_property(conn, entity_id, prop_key, value, vtype,
-                                  source_id, confidence=0.9)
+            property_records.append({
+                "entity_name": name, "key": prop_key, "value": value,
+                "value_type": vtype, "confidence": 0.9, "origins": [dataset["url"]],
+            })
         count += 1
 
+    entity_ids = await bulk_get_or_create_entities(conn, entity_records)
+    for record in property_records:
+        record["entity_id"] = entity_ids[record.pop("entity_name")]
+    await bulk_upsert_properties(conn, property_records, source_id)
     print(f"  OK: {count} entidades")
     return count
 
@@ -206,6 +222,7 @@ async def main():
             n = await scrape_dataset(conn, source_id, dataset)
             total += n
             await asyncio.sleep(1)
+        await mark_source_synced(conn, source_id)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")
     finally:
         await conn.close()

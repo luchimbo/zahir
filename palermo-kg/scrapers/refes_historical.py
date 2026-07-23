@@ -26,18 +26,18 @@ async def main():
     if args.limit: candidates=candidates[:args.limit]
     print(f"REFES: {len(rows)} filas | {len(candidates)} candidatas por CP Palermo | write={args.write}")
     if not args.write:return
+    async with httpx.AsyncClient(timeout=30) as geocoder:
+     semaphore=asyncio.Semaphore(5)
+     async def locate(row):
+      address=first(row,"domicilio","direccion")
+      try:
+       async with semaphore: return await geocode_address(geocoder,address) if address else None
+      except httpx.HTTPError: return None
+     geocoded=await asyncio.gather(*(locate(row) for row in candidates))
     conn=await get_conn()
     try:
         source=await ensure_source(conn,"refes_historical",ORIGIN,4)
-        async with httpx.AsyncClient(timeout=30) as geocoder:
-         semaphore=asyncio.Semaphore(5)
-         async def locate(row):
-          address=first(row,"domicilio","direccion")
-          try:
-           async with semaphore: return await geocode_address(geocoder,address) if address else None
-          except httpx.HTTPError: return None
-         geocoded=await asyncio.gather(*(locate(row) for row in candidates))
-         for row,geo in zip(candidates,geocoded):
+        for row,geo in zip(candidates,geocoded):
             refes=first(row,"establecimiento_id","id_establecimiento")
             entity=await conn.fetchval("""SELECT p.entity_id FROM active_properties p JOIN entities e ON e.id=p.entity_id
                 WHERE p.key='refes_id' AND p.value=$1 AND e.is_active AND e.canonical_id IS NULL LIMIT 1""",refes) if refes else None
@@ -45,7 +45,7 @@ async def main():
             if not name:continue
             address=first(row,"domicilio","direccion")
             if not geo: continue
-            if not entity: entity=await get_or_create_entity(conn,name,"Facility","health_facility",geo.lat,geo.lng,origin_url=ORIGIN)
+            if not entity: entity=await get_or_create_entity(conn,name,"Facility","health_facility",geo.lat,geo.lng,origin_url=ORIGIN,source_id=source,external_id=refes or None)
             fields={"refes_id":refes,"health_facility_type":first(row,"tipologia_nombre","tipo_establecimiento","tipo"),"jurisdiction":first(row,"provincia_nombre"),"funding_type":first(row,"origen_financiamiento","financiamiento","sector"),"address":address,"historical_status":"Historical Source","historical_data_year":"2024"}
             for key,value in fields.items():
                 if value: await upsert_property(conn,str(entity),key,normalize_value(value),"string",source,[ORIGIN],.75)

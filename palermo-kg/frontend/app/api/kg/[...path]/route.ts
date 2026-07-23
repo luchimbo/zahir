@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const KG_API_BASE = process.env.KG_API_BASE ?? "http://127.0.0.1:8000";
+const KG_API_KEY = process.env.KG_API_KEY;
 
 export async function GET(
   request: NextRequest,
@@ -13,7 +14,7 @@ export async function GET(
 
   try {
     const response = await fetch(upstream, {
-      headers: { accept: "application/json" },
+      headers: { accept: "application/json", ...(KG_API_KEY ? { "x-api-key": KG_API_KEY } : {}) },
       cache: "no-store"
     });
 

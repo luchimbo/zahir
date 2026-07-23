@@ -22,6 +22,8 @@ import asyncio
 import argparse
 import os
 import re
+import json
+from difflib import SequenceMatcher
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from scrapers.shared.db_helpers import get_conn
@@ -115,19 +117,19 @@ async def merge_entities(conn, keep_id: str, duplicate_id: str, confidence: floa
     if not dup_row:
         return
     dup_name = dup_row["name"]
-    dup_all_names = dup_row["all_names"] or []
+    dup_all_names = json.loads(dup_row["all_names"]) if isinstance(dup_row["all_names"], str) else (dup_row["all_names"] or [])
 
     keep_row = await conn.fetchrow(
         "SELECT name, all_names FROM entities WHERE id = $1", keep_id
     )
-    keep_all_names = keep_row["all_names"] or []
+    keep_all_names = json.loads(keep_row["all_names"]) if isinstance(keep_row["all_names"], str) else (keep_row["all_names"] or [])
 
     new_all_names = list(set(keep_all_names + [dup_name] + list(dup_all_names)))
 
     await conn.execute(
         """
         UPDATE entities
-        SET canonical_id = $1, is_active = false, updated_at = now()
+        SET canonical_id = $1, is_active = false, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
         """,
         keep_id, duplicate_id
@@ -135,21 +137,19 @@ async def merge_entities(conn, keep_id: str, duplicate_id: str, confidence: floa
     await conn.execute(
         """
         UPDATE entities
-        SET all_names = $1, updated_at = now()
+        SET all_names = $1, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
         """,
-        new_all_names, keep_id
+        json.dumps(new_all_names), keep_id
     )
     await conn.execute(
         """
-        INSERT INTO relationships
-            (from_entity_id, relationship_type, to_entity_id, confidence,
-             origins, direction)
-        VALUES ($1, 'CANONICAL', $2, $3, $4, 'directed')
-        ON CONFLICT DO NOTHING
+        INSERT INTO relationships (id, from_entity_id, relationship_type, to_entity_id, confidence, origins, direction)
+        SELECT UUID(), $1, 'CANONICAL', $2, $3, $4, 'directed'
+        WHERE NOT EXISTS (SELECT 1 FROM relationships WHERE from_entity_id=$5 AND relationship_type='CANONICAL' AND to_entity_id=$6)
         """,
         duplicate_id, keep_id, confidence,
-        [f"entity_resolver:{method}"]
+        json.dumps([f"entity_resolver:{method}"]), duplicate_id, keep_id
     )
 
 
@@ -158,7 +158,7 @@ async def find_candidate_pairs(conn, entity_type: str, subtype: str | None) -> l
     if subtype:
         rows = await conn.fetch(
             """
-            SELECT id::text, name
+            SELECT id, name
             FROM entities
             WHERE entity_type = $1 AND subtype = $2
               AND is_active = true AND canonical_id IS NULL
@@ -169,7 +169,7 @@ async def find_candidate_pairs(conn, entity_type: str, subtype: str | None) -> l
     else:
         rows = await conn.fetch(
             """
-            SELECT id::text, name
+            SELECT id, name
             FROM entities
             WHERE entity_type = $1
               AND is_active = true AND canonical_id IS NULL
@@ -178,31 +178,21 @@ async def find_candidate_pairs(conn, entity_type: str, subtype: str | None) -> l
             entity_type
         )
 
-    # Para evitar O(n^2) comparaciones trgm, usamos pg_trgm en SQL.
-    # Hacemos una query por entidad contra el resto del grupo.
+    # TiDB no ofrece pg_trgm: se calcula una similitud conservadora en Python.
     candidates = []
     names = {r["id"]: r["name"] for r in rows}
     for r in rows:
         org_id = r["id"]
         org_name = r["name"]
-        matches = await conn.fetch(
-            """
-            SELECT id::text, name,
-                   GREATEST(similarity(lower(name), lower($1)),
-                            strict_word_similarity(lower(name), lower($1))) AS sim
-            FROM entities
-            WHERE id != $2
-              AND entity_type = $3
-              AND ($4::text IS NULL OR subtype = $4)
-              AND is_active = true AND canonical_id IS NULL
-              AND (name % $1 OR lower(name) ILIKE '%' || lower($1) || '%')
-            ORDER BY sim DESC
-            LIMIT 3
-            """,
-            org_name, org_id, entity_type, subtype
-        )
-        for m in matches:
-            sim = float(m["sim"])
+        matches = []
+        norm_org = normalize_name_for_match(org_name)
+        for other in rows:
+            if other["id"] == org_id:
+                continue
+            sim = SequenceMatcher(None, norm_org, normalize_name_for_match(other["name"])).ratio()
+            if sim >= SIMILARITY_MAYBE:
+                matches.append((sim, other))
+        for sim, m in sorted(matches, key=lambda item: item[0], reverse=True)[:3]:
             if sim < SIMILARITY_MAYBE:
                 continue
             # Evitar duplicados simetricos: ordenamos IDs
@@ -305,8 +295,6 @@ async def main():
 
     conn = await get_conn()
     try:
-        await conn.execute("SET pg_trgm.similarity_threshold = 0.3")
-
         if args.entity_type:
             groups = [(args.entity_type, args.subtype)]
         else:

@@ -12,7 +12,8 @@ import os
 import httpx
 from dotenv import load_dotenv
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    bulk_get_or_create_entities, bulk_link_external_ids, bulk_upsert_properties,
+    get_conn, get_source_id, mark_source_synced
 )
 
 load_dotenv()
@@ -43,6 +44,9 @@ PLACE_TYPES = [
     "park",
     "night_club",
 ]
+
+# Límite duro por corrida: evita costos inesperados. Puede elevarse mediante env.
+MAX_TYPES_PER_RUN = max(1, min(int(os.getenv("GOOGLE_PLACES_MAX_TYPES", "3")), len(PLACE_TYPES)))
 
 # Campos que pedimos a la API (reduce costo de requests)
 FIELD_MASK = ",".join([
@@ -102,7 +106,8 @@ async def scrape_google_places(source_id: str):
     all_collected = []
 
     async with httpx.AsyncClient() as client:
-        for place_type in PLACE_TYPES:
+        completed = True
+        for place_type in PLACE_TYPES[:MAX_TYPES_PER_RUN]:
             try:
                 places = await fetch_places(client, place_type)
                 print(f"  -> {place_type}: {len(places)} resultados")
@@ -110,14 +115,16 @@ async def scrape_google_places(source_id: str):
                     all_collected.append((place_type, p))
             except Exception as e:
                 print(f"  [warn] {place_type}: {e}")
+                completed = False
                 continue
 
     if not all_collected:
         print("  No se recolectaron lugares de Google Places.")
-        return
+        return False
 
     conn = await get_conn()
     try:
+        entity_records, property_records, external_links = [], [], []
         for place_type, place in all_collected:
             gid = place.get("id", "")
             if gid in seen_ids:
@@ -142,63 +149,48 @@ async def scrape_google_places(source_id: str):
 
             subtype = place_type
 
-            entity_id = await get_or_create_entity(
-                conn, name=name, entity_type="Organization",
-                subtype=subtype, lat=lat, lng=lng,
-                description=summary or None,
-                origin_url=f"https://maps.google.com/?cid={gid}",
-                all_names=[]
-            )
+            entity_records.append({
+                "name": name, "entity_type": "Organization", "subtype": subtype,
+                "lat": lat, "lng": lng, "description": summary or None,
+                "origin_url": f"https://maps.google.com/?cid={gid}", "all_names": [],
+            })
 
             origin = [f"https://maps.google.com/?cid={gid}"]
 
-            if address:
-                await upsert_property(conn, entity_id, "address", address,
-                                      "string", source_id, origins=origin)
-            if phone:
-                await upsert_property(conn, entity_id, "phone", phone,
-                                      "string", source_id, origins=origin)
-            if website:
-                await upsert_property(conn, entity_id, "website", website,
-                                      "url", source_id, origins=origin)
-            if rating is not None:
-                await upsert_property(conn, entity_id, "rating", str(rating),
-                                      "number", source_id, origins=origin)
-            if review_count is not None:
-                await upsert_property(conn, entity_id, "review_count", str(review_count),
-                                      "number", source_id, origins=origin)
-            if price_level:
-                await upsert_property(conn, entity_id, "price_range", price_level,
-                                      "string", source_id, origins=origin)
-            if place.get("delivery") is not None:
-                await upsert_property(conn, entity_id, "has_delivery",
-                                      str(place["delivery"]).lower(),
-                                      "boolean", source_id, origins=origin)
-            if place.get("reservable") is not None:
-                await upsert_property(conn, entity_id, "accepts_reservations",
-                                      str(place["reservable"]).lower(),
-                                      "boolean", source_id, origins=origin)
-            if place.get("servesVegetarianFood") is not None:
-                await upsert_property(conn, entity_id, "serves_vegetarian",
-                                      str(place["servesVegetarianFood"]).lower(),
-                                      "boolean", source_id, origins=origin)
+            values = [
+                ("address", address, "string"), ("phone", phone, "string"),
+                ("website", website, "url"), ("rating", rating, "number"),
+                ("review_count", review_count, "number"), ("price_range", price_level, "string"),
+                ("has_delivery", str(place["delivery"]).lower() if place.get("delivery") is not None else "", "boolean"),
+                ("accepts_reservations", str(place["reservable"]).lower() if place.get("reservable") is not None else "", "boolean"),
+                ("serves_vegetarian", str(place["servesVegetarianFood"]).lower() if place.get("servesVegetarianFood") is not None else "", "boolean"),
+            ]
 
             # Horarios
             hours = place.get("regularOpeningHours", {})
             weekday_text = hours.get("weekdayDescriptions", [])
             if weekday_text:
-                await upsert_property(conn, entity_id, "hours_text",
-                                      " | ".join(weekday_text),
-                                      "string", source_id, origins=origin)
+                values.append(("hours_text", " | ".join(weekday_text), "string"))
+            for key, value, value_type in values:
+                if value not in (None, ""):
+                    property_records.append({"entity_name": name, "key": key, "value": str(value),
+                                             "value_type": value_type, "origins": origin, "confidence": 0.75})
+            external_links.append((name, gid))
 
             total += 1
             if total % 20 == 0:
                 print(f"    Procesados {total}/{len(all_collected)} lugares...")
             await asyncio.sleep(0.05)
+        entity_ids = await bulk_get_or_create_entities(conn, entity_records)
+        await bulk_link_external_ids(conn, [(entity_ids[name], source_id, gid) for name, gid in external_links])
+        for record in property_records:
+            record["entity_id"] = entity_ids[record.pop("entity_name")]
+        await bulk_upsert_properties(conn, property_records, source_id)
     finally:
         await conn.close()
 
     print(f"  [OK] {total} lugares de Palermo procesados")
+    return completed
 
 
 async def main():
@@ -209,10 +201,17 @@ async def main():
     finally:
         await conn.close()
         
-    await scrape_google_places(source_id)
+    completed = await scrape_google_places(source_id)
+    if completed:
+        conn = await get_conn()
+        try:
+            await mark_source_synced(conn, source_id)
+        finally:
+            await conn.close()
+    else:
+        print("Google Places incompleto: la fuente queda pendiente.")
     print("\n[OK] Scraper finalizado exitosamente")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

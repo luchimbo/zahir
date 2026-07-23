@@ -44,7 +44,7 @@ async def test_retrieve_entity_shape(client):
     response = await client.get(f"/api/entity/{entity_id}")
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload.keys()) == {"entity", "properties", "relationships", "tags"}
+    assert set(payload.keys()) == {"entity", "properties", "relationships", "tags", "legal_records_summary"}
     assert payload["entity"]["id"] == entity_id
     assert isinstance(payload["properties"], list)
     assert isinstance(payload["relationships"], list)

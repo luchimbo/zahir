@@ -9,6 +9,7 @@ api-server*.log
 .ruff_cache/
 playwright-report/
 test-results/
+scrapers/.cache/
 frontend/.next/
 frontend/node_modules/
 frontend/.npm-cache/

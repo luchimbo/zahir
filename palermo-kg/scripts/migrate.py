@@ -1,33 +1,61 @@
-"""Aplica migraciones SQL idempotentes."""
-import asyncio
+"""Aplica el esquema idempotente compatible con TiDB Cloud."""
 import os
+import ssl
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
-import asyncpg
+import pymysql
 from dotenv import load_dotenv
 
 load_dotenv()
 
-MIGRATIONS = [
-    Path("db/11_query_log.sql"),
-]
+MIGRATIONS = [Path("db/tidb_init.sql"), Path("db/11_igj_history.sql")]
 
 
-async def main():
+def tls_context():
+    """TiDB Cloud requiere TLS; el gateway actual presenta cadena vencida."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def connect():
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL no configurada")
+    url = urlparse(database_url)
+    if url.scheme not in {"mysql", "mysql+pymysql"}:
+        raise RuntimeError("DATABASE_URL debe ser mysql:// para TiDB")
+    return pymysql.connect(
+        host=url.hostname, port=url.port or 4000,
+        user=unquote(url.username or ""), password=unquote(url.password or ""),
+        database=os.getenv("DATABASE_NAME") or url.path.lstrip("/"), ssl=tls_context(),
+        autocommit=False,
+    )
 
-    conn = await asyncpg.connect(dsn=database_url)
+
+def main():
+    conn = connect()
     try:
-        for migration in MIGRATIONS:
-            sql = migration.read_text(encoding="utf-8")
-            print(f"Aplicando {migration}...")
-            await conn.execute(sql)
+        with conn.cursor() as cursor:
+            for migration in MIGRATIONS:
+                print(f"Aplicando {migration}...")
+                for statement in migration.read_text(encoding="utf-8").split(";"):
+                    sql = "\n".join(
+                        line for line in statement.splitlines()
+                        if not line.strip().startswith("--")
+                    ).strip()
+                    if sql:
+                        cursor.execute(sql)
+            conn.commit()
         print("OK migraciones aplicadas")
+    except Exception:
+        conn.rollback()
+        raise
     finally:
-        await conn.close()
+        conn.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

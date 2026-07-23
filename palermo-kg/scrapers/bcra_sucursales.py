@@ -11,7 +11,7 @@ import csv
 import io
 import httpx
 from scrapers.shared.db_helpers import (
-    get_conn, get_source_id, get_or_create_entity, upsert_property,
+    ensure_source, get_conn, get_or_create_entity, mark_source_synced, upsert_property,
     bulk_get_or_create_entities, bulk_upsert_properties,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
@@ -186,9 +186,10 @@ async def register_redes_cajeros(conn, source_id: str):
 async def main():
     conn = await get_conn()
     try:
-        source_id = await get_source_id(conn, "bcra")
+        source_id = await ensure_source(conn, "bcra", GCBA_CAJEROS_URL, 1)
         await scrape_cajeros_gcba(conn, source_id)
         await register_redes_cajeros(conn, source_id)
+        await mark_source_synced(conn, source_id)
     finally:
         await conn.close()
 

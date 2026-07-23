@@ -23,7 +23,7 @@ JOIN active_properties pa ON pa.entity_id = e.id AND pa.key = 'address'
 WHERE e.canonical_id IS NULL AND e.is_active
   AND (e.lat IS NULL OR e.lng IS NULL)
   AND e.entity_type IN ('Organization', 'Facility', 'Transport')
-  AND ($1::uuid IS NULL OR e.id > $1::uuid)
+  AND ($1 IS NULL OR e.id > $1)
 ORDER BY e.id
 """
 
@@ -95,7 +95,8 @@ async def main():
 
     conn = await get_conn()
 
-    rows = await conn.fetch(CANDIDATES_SQL, args.after_id)
+    # DB-API no reutiliza el mismo placeholder: $1 aparece dos veces en el SQL.
+    rows = await conn.fetch(CANDIDATES_SQL, args.after_id, args.after_id)
     by_entity: dict[str, dict] = {}
     for row in rows:
         entry = by_entity.setdefault(

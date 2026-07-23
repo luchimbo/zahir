@@ -12,7 +12,7 @@ Datasets que importa:
 import asyncio
 import httpx
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    get_conn, get_or_create_entity, upsert_property, get_source_id, mark_source_synced
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
@@ -35,9 +35,19 @@ SUBTE_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/sbase/subte-e
 # API de espacios verdes
 ESPACIOS_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/espacios-verdes/espacio_verde_publico.geojson"
 
+# Caja operativa de Palermo y sus subbarrios; evita cargar datos ajenos al KG.
+PALERMO_BBOX = (-34.610, -34.558, -58.450, -58.395)
+
+
+def in_palermo(lat, lng):
+    if lat is None or lng is None:
+        return False
+    south, north, west, east = PALERMO_BBOX
+    return south <= float(lat) <= north and west <= float(lng) <= east
+
 
 async def scrape_barrios(conn, source_id: str):
-    print("→ Scrapeando barrios...")
+    print("-> Scrapeando barrios...")
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         r = await client.get(BARRIOS_URL)
         r.raise_for_status()
@@ -64,8 +74,11 @@ async def scrape_barrios(conn, source_id: str):
         except (IndexError, TypeError):
             pass
 
-        area_km2 = props.get("AREA") or props.get("area")
-        perimeter = props.get("PERIMETRO") or props.get("perimetro")
+        if name != "Palermo":
+            continue
+
+        area_km2 = props.get("AREA") or props.get("area") or props.get("area_metro")
+        perimeter = props.get("PERIMETRO") or props.get("perimetro") or props.get("perimetro_")
         comuna = props.get("COMUNA") or props.get("comuna")
 
         entity_id = await get_or_create_entity(
@@ -87,11 +100,11 @@ async def scrape_barrios(conn, source_id: str):
                                    "number", source_id, origins=[BARRIOS_URL])
         count += 1
 
-    print(f"  ✓ {count} barrios procesados")
+    print(f"  OK {count} barrios procesados")
 
 
 async def scrape_subte(conn, source_id: str):
-    print("→ Scrapeando estaciones de subte...")
+    print("-> Scrapeando estaciones de subte...")
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         r = await client.get(SUBTE_URL)
         r.raise_for_status()
@@ -115,6 +128,9 @@ async def scrape_subte(conn, source_id: str):
         lat = float(coords[1]) if len(coords) > 1 else None
         lng = float(coords[0]) if len(coords) > 0 else None
 
+        if not in_palermo(lat, lng):
+            continue
+
         full_name = f"Estación {name} (Línea {linea})"
 
         entity_id = await get_or_create_entity(
@@ -132,11 +148,11 @@ async def scrape_subte(conn, source_id: str):
                                    "string", source_id, origins=[SUBTE_URL])
         count += 1
 
-    print(f"  ✓ {count} estaciones de subte procesadas")
+    print(f"  OK {count} estaciones de subte procesadas")
 
 
 async def scrape_espacios_verdes(conn, source_id: str):
-    print("→ Scrapeando espacios verdes...")
+    print("-> Scrapeando espacios verdes...")
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         r = await client.get(ESPACIOS_URL)
         r.raise_for_status()
@@ -147,7 +163,7 @@ async def scrape_espacios_verdes(conn, source_id: str):
 
     for f in features:
         props = f.get("properties", {})
-        name = (props.get("nombre") or props.get("NOMBRE") or "").strip().title()
+        name = (props.get("nombre") or props.get("NOMBRE") or props.get("nom_mapa") or "").strip().title()
         barrio = (props.get("barrio") or props.get("BARRIO") or "").upper()
 
         if not name:
@@ -192,7 +208,7 @@ async def scrape_espacios_verdes(conn, source_id: str):
                                "boolean", source_id, origins=[ESPACIOS_URL])
         palermo_count += 1
 
-    print(f"  ✓ {palermo_count} espacios verdes de Palermo procesados")
+    print(f"  OK {palermo_count} espacios verdes de Palermo procesados")
 
 
 async def main():
@@ -203,7 +219,8 @@ async def main():
         await scrape_barrios(conn, source_id)
         await scrape_subte(conn, source_id)
         await scrape_espacios_verdes(conn, source_id)
-        print("\n✓ Scraper finalizado exitosamente")
+        await mark_source_synced(conn, source_id)
+        print("\nOK Scraper finalizado exitosamente")
     finally:
         await conn.close()
 
