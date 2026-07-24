@@ -47,7 +47,14 @@ def main():
                         if not line.strip().startswith("--")
                     ).strip()
                     if sql:
-                        cursor.execute(sql)
+                        try:
+                            cursor.execute(sql)
+                        except pymysql.err.OperationalError as exc:
+                            # TiDB no soporta CREATE INDEX IF NOT EXISTS en todas las versiones.
+                            if exc.args and exc.args[0] == 1061:
+                                print("  indice ya existente; se omite")
+                                continue
+                            raise
             conn.commit()
         print("OK migraciones aplicadas")
     except Exception:

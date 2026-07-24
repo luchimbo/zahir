@@ -28,15 +28,17 @@ async def source_health():
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT s.source_name, s.tier, s.scraped_at,
+            SELECT s.source_name, s.tier, s.scraped_at, policy.data_class, policy.refresh_schedule,
+                   policy.cost_policy, policy.enabled,
                    COUNT(p.id) AS properties,
                    COUNT(DISTINCT p.entity_id) AS entities,
                    MAX(p.last_seen_at) AS last_seen_at,
                    COUNT(DISTINCT CASE WHEN e.lat IS NOT NULL AND e.lng IS NOT NULL THEN p.entity_id END) AS geocoded_entities
             FROM sources s
+            LEFT JOIN source_policies policy ON policy.source_id=s.id
             LEFT JOIN properties p ON p.source_id = s.id
             LEFT JOIN entities e ON e.id = p.entity_id
-            GROUP BY s.id
+            GROUP BY s.id, policy.data_class, policy.refresh_schedule, policy.cost_policy, policy.enabled
             ORDER BY properties DESC, s.source_name
             """
         )

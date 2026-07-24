@@ -4,6 +4,8 @@ import { useEffect, useRef } from "react";
 import { MapPin } from "lucide-react";
 import { MentionedEntity } from "../lib/types";
 
+const escapeHtml = (value: string) => value.replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char] ?? char);
+
 export default function CoordinateMap({ entities }: { entities: MentionedEntity[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -37,17 +39,25 @@ export default function CoordinateMap({ entities }: { entities: MentionedEntity[
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
       }).addTo(mapInstance);
 
+      const clusters = new Map<string, typeof points>();
+      points.forEach((point) => {
+        const key = `${point.lat.toFixed(3)}:${point.lng.toFixed(3)}`;
+        clusters.set(key, [...(clusters.get(key) ?? []), point]);
+      });
       const bounds = L.latLngBounds([]);
-      points.forEach((point, index) => {
-        const marker = L.circleMarker([point.lat, point.lng], {
-          radius: 8,
+      [...clusters.values()].forEach((cluster, index) => {
+        const lat = cluster.reduce((sum, point) => sum + point.lat, 0) / cluster.length;
+        const lng = cluster.reduce((sum, point) => sum + point.lng, 0) / cluster.length;
+        const marker = L.circleMarker([lat, lng], {
+          radius: Math.min(18, 7 + cluster.length * 2),
           color: "#3f342e",
           weight: 2,
           fillColor: index === 0 ? "#db8b12" : "#1aa7e8",
           fillOpacity: 0.85
         }).addTo(mapInstance as import("leaflet").Map);
-        marker.bindPopup(`<strong>${point.entity.name}</strong><br/>${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`);
-        bounds.extend([point.lat, point.lng]);
+        const names = cluster.slice(0, 5).map((point) => escapeHtml(point.entity.name)).join("<br/>");
+        marker.bindPopup(cluster.length > 1 ? `<strong>${cluster.length} entidades</strong><br/>${names}` : `<strong>${names}</strong><br/>${lat.toFixed(6)}, ${lng.toFixed(6)}`);
+        bounds.extend([lat, lng]);
       });
 
       if (points.length === 1) {

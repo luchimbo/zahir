@@ -15,6 +15,9 @@ async def knowledge_query(
     min_rating:  float | None = Q(default=None, ge=0, le=5),
     price_range: str | None = None,
     accessible:  bool | None = None,
+    delivery:    bool | None = None,
+    outdoor:     bool | None = None,
+    pet_friendly: bool | None = None,
     geocoded:    bool | None = None,
     limit:       int = Q(default=20, ge=1, le=100),
     offset:      int = Q(default=0, ge=0),
@@ -60,6 +63,12 @@ async def knowledge_query(
             conditions.append(f"""EXISTS (SELECT 1 FROM active_properties access
                 WHERE access.entity_id=e.id AND access.`key`='is_wheelchair_accessible'
                 AND LOWER(access.value)=${len(params)})""")
+        for property_key, expected in (("has_delivery", delivery), ("has_outdoor_seating", outdoor), ("is_pet_friendly", pet_friendly)):
+            if expected is not None:
+                params.append("true" if expected else "false")
+                conditions.append(f"""EXISTS (SELECT 1 FROM active_properties feature
+                    WHERE feature.entity_id=e.id AND feature.`key`='{property_key}'
+                    AND LOWER(feature.value)=${len(params)})""")
         if geocoded is not None:
             conditions.append("e.lat IS NOT NULL AND e.lng IS NOT NULL" if geocoded else "(e.lat IS NULL OR e.lng IS NULL)")
 

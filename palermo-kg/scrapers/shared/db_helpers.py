@@ -153,6 +153,27 @@ async def ensure_source(conn, source_name: str, source_url: str, tier: int = 1) 
     return await get_source_id(conn, source_name)
 
 
+async def register_source_policy(conn, source_id: str, *, data_class="current", refresh_schedule="manual",
+                                 access_mode="public", cost_policy="free", license_url=None, enabled=True):
+    await conn.execute(
+        """INSERT INTO source_policies (source_id,data_class,refresh_schedule,access_mode,cost_policy,license_url,enabled)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON DUPLICATE KEY UPDATE data_class=VALUES(data_class),refresh_schedule=VALUES(refresh_schedule),
+             access_mode=VALUES(access_mode),cost_policy=VALUES(cost_policy),license_url=VALUES(license_url),enabled=VALUES(enabled)""",
+        source_id, data_class, refresh_schedule, access_mode, cost_policy, license_url, enabled,
+    )
+
+
+async def save_checkpoint(conn, source_id: str, cursor_value=None, content_hash=None, error_code=None, retry_count=0):
+    await conn.execute(
+        """INSERT INTO source_checkpoints (source_id,cursor_value,content_hash,last_heartbeat_at,last_error_code,retry_count)
+           VALUES ($1,$2,$3,CURRENT_TIMESTAMP,$4,$5)
+           ON DUPLICATE KEY UPDATE cursor_value=VALUES(cursor_value),content_hash=VALUES(content_hash),
+             last_heartbeat_at=CURRENT_TIMESTAMP,last_error_code=VALUES(last_error_code),retry_count=VALUES(retry_count)""",
+        source_id, cursor_value, content_hash, error_code, retry_count,
+    )
+
+
 async def mark_source_synced(conn, source_id: str):
     await conn.execute("UPDATE sources SET scraped_at=CURRENT_TIMESTAMP WHERE id=$1", source_id)
 

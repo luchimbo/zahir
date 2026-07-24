@@ -10,21 +10,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scrapers.source_catalog import SOURCES, by_name
-from scrapers.shared.db_helpers import ensure_source, finish_sync_run, get_conn, has_active_sync_run, start_sync_run
+from scrapers.shared.db_helpers import ensure_source, finish_sync_run, get_conn, has_active_sync_run, register_source_policy, save_checkpoint, start_sync_run
 
 
 async def register_sources(sources=SOURCES):
     conn = await get_conn()
     try:
         for source in sources:
-            await ensure_source(conn, source.name, source.url, source.tier)
+            source_id = await ensure_source(conn, source.name, source.url, source.tier)
+            await register_source_policy(conn, source_id, data_class=source.data_class,
+                                         refresh_schedule=source.refresh_schedule, access_mode=source.mode,
+                                         cost_policy=source.cost_policy, license_url=source.license_url,
+                                         enabled=source.cost_policy == "free")
     finally:
         await conn.close()
 
 
-async def run_source(source):
+async def run_source(source, allow_paid=False):
     if source.mode == "approval":
         print(f"SKIP {source.name}: requiere autorización explícita de uso.")
+        return "skipped"
+    if source.cost_policy != "free" and not allow_paid:
+        print(f"SKIP {source.name}: politica de costo '{source.cost_policy}' no habilitada.")
         return "skipped"
     if source.env_key and not os.getenv(source.env_key):
         print(f"SKIP {source.name}: falta {source.env_key}.")
@@ -37,6 +44,7 @@ async def run_source(source):
             print(f"SKIP {source.name}: ya tiene una sincronizacion activa.")
             return "skipped"
         run_id = await start_sync_run(conn, source_id)
+        await save_checkpoint(conn, source_id)
     finally:
         await conn.close()
     try:
@@ -53,6 +61,7 @@ async def run_source(source):
         conn = await get_conn()
         try:
             await finish_sync_run(conn, run_id, "completed")
+            await save_checkpoint(conn, source_id, retry_count=0)
         finally:
             await conn.close()
         return "ok"
@@ -61,6 +70,7 @@ async def run_source(source):
         conn = await get_conn()
         try:
             await finish_sync_run(conn, run_id, "failed", error_message=f"{type(exc).__name__}: {exc}")
+            await save_checkpoint(conn, source_id, error_code=type(exc).__name__, retry_count=1)
         finally:
             await conn.close()
         return "failed"
@@ -70,6 +80,8 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", action="append", choices=[s.name for s in SOURCES])
     parser.add_argument("--include-credentials", action="store_true")
+    parser.add_argument("--allow-paid", action="store_true", help="Habilita conectores pagos tras una autorizacion explicita.")
+    parser.add_argument("--register-only", action="store_true", help="Registra catalogo y politicas sin ejecutar conectores.")
     parser.add_argument("--retry-incomplete", action="store_true", help="Reintenta solo fuentes cuyo ultimo run fallo o quedo parcial.")
     args = parser.parse_args()
     if args.source:
@@ -87,9 +99,12 @@ async def main():
     else:
         selected = list(SOURCES)
     await register_sources(selected)
+    if args.register_only:
+        print({"registered": len(selected), "executed": 0})
+        return
     if not args.include_credentials:
         selected = [s for s in selected if s.mode != "credential"]
-    results = [await run_source(source) for source in selected]
+    results = [await run_source(source, allow_paid=args.allow_paid) for source in selected]
     print({"ok": results.count("ok"), "skipped": results.count("skipped"), "failed": results.count("failed")})
 
 

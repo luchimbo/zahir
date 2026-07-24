@@ -72,6 +72,25 @@ CREATE TABLE IF NOT EXISTS external_ids (
   CONSTRAINT external_ids_source_fk FOREIGN KEY (source_id) REFERENCES sources(id),
   UNIQUE KEY external_ids_source_value (source_id, external_id)
 );
+CREATE TABLE IF NOT EXISTS source_policies (
+  source_id CHAR(36) PRIMARY KEY, data_class VARCHAR(30) NOT NULL DEFAULT 'current',
+  refresh_schedule VARCHAR(40) NOT NULL DEFAULT 'manual', access_mode VARCHAR(30) NOT NULL DEFAULT 'public',
+  cost_policy VARCHAR(20) NOT NULL DEFAULT 'free', enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  license_url TEXT NULL, terms_url TEXT NULL, permitted_fields JSON NULL, retention_days INT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT policies_source_fk FOREIGN KEY (source_id) REFERENCES sources(id)
+);
+CREATE TABLE IF NOT EXISTS source_checkpoints (
+  source_id CHAR(36) PRIMARY KEY, cursor_value TEXT NULL, content_hash CHAR(64) NULL,
+  last_heartbeat_at TIMESTAMP NULL, next_attempt_at TIMESTAMP NULL, retry_count INT NOT NULL DEFAULT 0,
+  last_error_code VARCHAR(100) NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT checkpoints_source_fk FOREIGN KEY (source_id) REFERENCES sources(id)
+);
+CREATE TABLE IF NOT EXISTS source_run_metrics (
+  run_id CHAR(36) PRIMARY KEY, coverage JSON NULL, extractor_version VARCHAR(80) NULL,
+  error_code VARCHAR(100) NULL, checkpoint_after TEXT NULL, content_hash CHAR(64) NULL,
+  CONSTRAINT metrics_run_fk FOREIGN KEY (run_id) REFERENCES source_sync_runs(id)
+);
 CREATE INDEX IF NOT EXISTS entities_filters_idx ON entities(entity_type, subtype, is_active, canonical_id);
 CREATE INDEX IF NOT EXISTS entities_coordinates_idx ON entities(lat, lng);
 CREATE INDEX IF NOT EXISTS entities_name_idx ON entities(name);
@@ -83,6 +102,7 @@ CREATE INDEX IF NOT EXISTS relationships_to_idx ON relationships(to_entity_id);
 CREATE INDEX IF NOT EXISTS query_log_created_idx ON query_log(created_at);
 CREATE INDEX IF NOT EXISTS source_sync_runs_source_idx ON source_sync_runs(source_id, started_at);
 CREATE INDEX IF NOT EXISTS external_ids_entity_idx ON external_ids(entity_id);
+CREATE INDEX IF NOT EXISTS checkpoints_retry_idx ON source_checkpoints(next_attempt_at, retry_count);
 CREATE OR REPLACE VIEW active_properties AS
 SELECT * FROM properties WHERE valid_until IS NULL OR valid_until > CURRENT_DATE();
 INSERT IGNORE INTO entity_types (name, description) VALUES
