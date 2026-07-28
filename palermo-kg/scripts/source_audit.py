@@ -5,13 +5,13 @@ No modifica entidades, propiedades ni fuentes.
 """
 
 import asyncio
-import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-import asyncpg
-from dotenv import load_dotenv
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-load_dotenv()
+from api.db import close_pool, get_pool
 
 
 SQL = """
@@ -22,9 +22,8 @@ SELECT
     COUNT(DISTINCT p.entity_id) AS entities,
     COUNT(p.id) AS properties,
     MAX(p.last_seen_at) AS last_property_seen_at,
-    COUNT(DISTINCT p.entity_id) FILTER (
-        WHERE e.lat IS NOT NULL AND e.lng IS NOT NULL
-    ) AS geocoded_entities
+    COUNT(DISTINCT CASE WHEN e.lat IS NOT NULL AND e.lng IS NOT NULL THEN p.entity_id END)
+        AS geocoded_entities
 FROM sources s
 LEFT JOIN properties p ON p.source_id = s.id
 LEFT JOIN entities e ON e.id = p.entity_id
@@ -43,15 +42,12 @@ def age_label(value: datetime | None) -> str:
 
 
 async def main():
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL no configurada")
-
-    conn = await asyncpg.connect(dsn=database_url)
+    pool = await get_pool()
     try:
-        rows = await conn.fetch(SQL)
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(SQL)
     finally:
-        await conn.close()
+        await close_pool()
 
     print("\nAuditoría de fuentes — Palermo Knowledge Graph\n")
     print(

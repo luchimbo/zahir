@@ -17,6 +17,11 @@ from uuid import uuid4
 
 import httpx
 
+try:
+    import zipfile_deflate64  # Registra soporte Deflate64 en zipfile, también en Railway/Linux.
+except ImportError:  # Permite operar cortes ZIP normales cuando el extra no está disponible localmente.
+    zipfile_deflate64 = None
+
 from scrapers.shared.db_helpers import (
     ensure_source, finish_sync_run, get_conn, get_or_create_entity,
     mark_source_synced, start_sync_run, upsert_property,
@@ -120,19 +125,26 @@ async def discover_resources(client: httpx.AsyncClient) -> list[dict]:
 async def download_resource(client: httpx.AsyncClient, resource: dict) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{resource.get('id', hashlib.sha256(resource['url'].encode()).hexdigest())}.zip"
-    if path.exists() and path.stat().st_size:
-        return path
-    async with client.stream("GET", resource["url"]) as response:
-        response.raise_for_status()
-        with path.open("wb") as handle:
-            async for chunk in response.aiter_bytes():
-                handle.write(chunk)
+    if not path.exists() or not path.stat().st_size:
+        async with client.stream("GET", resource["url"]) as response:
+            response.raise_for_status()
+            with path.open("wb") as handle:
+                async for chunk in response.aiter_bytes():
+                    handle.write(chunk)
     return path
 
 
 def csv_rows(archive: zipfile.ZipFile, filename: str):
-    with archive.open(filename) as binary:
-        yield from csv.DictReader(io.TextIOWrapper(binary, encoding="utf-8-sig", errors="replace", newline=""))
+    try:
+        with archive.open(filename) as binary:
+            yield from csv.DictReader(io.TextIOWrapper(binary, encoding="utf-8-sig", errors="replace", newline=""))
+    except NotImplementedError as exc:
+        if zipfile_deflate64 is None:
+            raise RuntimeError(
+                "El corte de IGJ usa Deflate64. Instalá las dependencias de producción "
+                "(incluye zipfile-deflate64) antes de reintentar."
+            ) from exc
+        raise
 
 
 def record_payload(row: dict) -> dict:
@@ -205,7 +217,7 @@ async def process_period(conn, client, cache, polygon, source_id: str, resource:
                 entity_id = await get_or_create_entity(conn, name, "LegalEntity", subtype=subtype_name(value(entity, "descripcion_tipo_societario")), lat=lat, lng=lng, origin_url=resource["url"], source_id=source_id, external_id=external_id)
                 observed_date = f"{period}-01" if period != "unknown" else None
                 estado = "Baja" if value(entity, "dada_de_baja") else "Activa"
-                for key, raw in (("cuit", clean_cuit(value(entity, "cuit"))), ("legal_status", estado), ("company_type", normalize_value(value(entity, "descripcion_tipo_societario"))), ("closure_reason", normalize_value(value(entity, "detalle_baja"))), ("legal_address", address)):
+                for key, raw in (("cuit", clean_cuit(value(entity, "cuit"))), ("estado", estado), ("tipo_sociedad", normalize_value(value(entity, "descripcion_tipo_societario"))), ("closure_reason", normalize_value(value(entity, "detalle_baja"))), ("legal_address", address)):
                     if raw:
                         await upsert_property(conn, entity_id, key, raw, "string", source_id, [resource["url"]], .5, observed_date)
                 payload = record_payload(domicile)

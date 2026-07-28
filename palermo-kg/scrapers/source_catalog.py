@@ -31,7 +31,7 @@ SOURCES = (
     SourceSpec("refes_historical", "scrapers.refes_historical", "https://datos.gob.ar", 4, "public", "Establecimientos de salud REFES", args=("--write",), data_class="historical", refresh_schedule="annual"),
     SourceSpec("bcra", "scrapers.bcra_sucursales", "https://www.bcra.gob.ar", 1, "public", "Cajeros y redes bancarias"),
     SourceSpec("google_places", "scrapers.google_places", "https://maps.googleapis.com/maps/api/place", 2, "credential", "Ratings, horarios y contacto", "GOOGLE_PLACES_API_KEY", (), "current", "weekly", "paid"),
-    SourceSpec("igj", "scrapers.igj", "https://www.igj.gob.ar", 2, "approval", "Sociedades y estado legal", data_class="current", refresh_schedule="weekly", cost_policy="approval"),
+    SourceSpec("igj", "scrapers.igj", "https://www.igj.gob.ar", 2, "public", "Sociedades y estado legal", data_class="current", refresh_schedule="weekly"),
     SourceSpec("boletin_oficial", "scrapers.boletin_oficial", "https://www.boletinoficial.gob.ar", 3, "credential", "Resoluciones y avisos oficiales", "OPENROUTER_API_KEY", ("--dias", "1"), "current", "daily", "paid"),
     SourceSpec("zonaprop", "scrapers.zonaprop", "https://www.zonaprop.com.ar", 2, "approval", "Inmuebles", data_class="current", refresh_schedule="daily", cost_policy="paid"),
     SourceSpec("argenprop", "scrapers.argenprop", "https://www.argenprop.com", 2, "approval", "Inmuebles", data_class="current", refresh_schedule="daily", cost_policy="paid"),
