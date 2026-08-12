@@ -36,6 +36,14 @@ acceso, última ejecución, filas leídas, entidades afectadas y error si falló
 | `transporte_rmba` | manual | KML oficial | Red histórica; complementa y no reemplaza movilidad GCBA. |
 | `cep_xxi` / `enacom_context` / `ceamse_context` | manual | datos agregados | Activar sólo con granularidad CABA, radio o coordenadas verificables. |
 | `national_monuments` | desactivada | descubrimiento | Sin descarga estructurada unificada validada; no ingerir automáticamente. |
+| `up_disenio_comunicacion` / `up_mapa_espacios_disenio` | anual | web/PDF manual | Fuentes académicas e históricas; revisar derechos y fecha antes de extraer. |
+| `michelin_guide_buenos_aires` / `hipodromo_gastronomia` | semanal/mensual | web manual | Usar para descubrimiento y verificación; no copiar reseñas extensas. |
+| `observatorio_leyendas_palermo` / `palermonline_historia` | anual/trimestral | PDF/web manual | Separar hechos documentados de leyendas y crónicas. |
+| `trama_ropa_autor` / `godoy_mix_group` | mensual | web manual | Verificar local, marca y vigencia comercial. |
+| `palermo_design` / `modo_casa` / `madera_muebles` | mensual | web manual | Verificar showroom, dirección y oferta vigente. |
+| `feliza_queer` / `agenda_queer` | semanal | web/red social manual | Eventos dinámicos; conservar fecha de captura y no inferir identidad. |
+| `cc_nueva_uriarte` / `c3_ciencia` | semanal/mensual | web manual | Registrar agenda, talleres y sede. |
+| `malba` / `museo_arte_decorativo` / `museo_evita` | mensual | web institucional | Registrar colecciones, exposiciones y horarios con fecha de vigencia. |
 
 ## Control previo a una fuente nueva
 
