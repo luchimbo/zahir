@@ -65,6 +65,16 @@ Estos frentes están pausados o pueden consumir cuotas/costos. No ejecutarlos si
 - nuevas APIs pagas
 - ingestas masivas sobre Neon Free
 
+## Actualizacion automatica de fuentes
+
+El workflow de GitHub Actions [`.github/workflows/refresh-sources.yml`](.github/workflows/refresh-sources.yml)
+se ejecuta diariamente a las 04:15 ART. Ejecuta `python scripts/run_sources.py --due`, que selecciona solo
+las fuentes gratuitas y publicas cuya frecuencia ya vencio; las fuentes pagas, con credenciales o aprobacion
+explicita permanecen bloqueadas. Para habilitarlo hay que definir `DATABASE_URL` como secreto de Actions.
+
+Se puede iniciar una corrida manual desde **Actions > Refresh public sources > Run workflow**. Los fallos quedan
+en `source_sync_runs` y se reintentan con `python scripts/run_sources.py --retry-incomplete`.
+
 ## Arquitectura
 
 ```text

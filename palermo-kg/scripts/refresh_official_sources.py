@@ -23,7 +23,6 @@ SOURCES = {
     "transporte_rmba": "scrapers/transporte_rmba.py",
     "cep_xxi": "scrapers/cep_xxi.py",
     "enacom_context": "scrapers/enacom_context.py",
-    "ceamse_context": "scrapers/ceamse_context.py",
     "national_monuments": "scrapers/national_monuments.py",
 }
 

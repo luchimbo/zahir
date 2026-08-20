@@ -5,12 +5,54 @@ import importlib
 import inspect
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scrapers.source_catalog import SOURCES, by_name
-from scrapers.shared.db_helpers import ensure_source, finish_sync_run, get_conn, has_active_sync_run, register_source_policy, save_checkpoint, start_sync_run
+from scrapers.shared.db_helpers import ensure_source, finish_sync_run, get_conn, has_active_sync_run, mark_source_synced, register_source_policy, save_checkpoint, start_sync_run
+
+
+SCHEDULE_INTERVALS = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+    "monthly": timedelta(days=31),
+    "quarterly": timedelta(days=92),
+    "annual": timedelta(days=366),
+}
+
+# Some legacy official connectors were deliberately dry-run by default. The
+# catalog is their authorization boundary; only these reviewed modules receive
+# the explicit write flag from scheduled execution.
+WRITE_OPT_IN_MODULES = {
+    "scrapers.gcba_urban_planning",
+    "scrapers.gcba_cultural_archive",
+    "scrapers.gcba_nightlife_events",
+}
+
+
+def is_due(source, scraped_at, now=None):
+    """Return whether a freely runnable source needs its scheduled refresh."""
+    interval = SCHEDULE_INTERVALS.get(source.refresh_schedule)
+    if interval is None or source.mode != "public" or source.cost_policy != "free":
+        return False
+    if scraped_at is None:
+        return True
+    if scraped_at.tzinfo is None:
+        scraped_at = scraped_at.replace(tzinfo=timezone.utc)
+    return scraped_at <= (now or datetime.now(timezone.utc)) - interval
+
+
+async def due_sources(sources=SOURCES, now=None):
+    """Read last successful source timestamps and select only due public sources."""
+    conn = await get_conn()
+    try:
+        rows = await conn.fetch("SELECT source_name, scraped_at FROM sources")
+    finally:
+        await conn.close()
+    scraped_at = {row["source_name"]: row["scraped_at"] for row in rows}
+    return [source for source in sources if is_due(source, scraped_at.get(source.name), now)]
 
 
 async def register_sources(sources=SOURCES):
@@ -51,7 +93,8 @@ async def run_source(source, allow_paid=False):
         module = importlib.import_module(source.module)
         original_argv = sys.argv
         try:
-            sys.argv = [source.module, *source.args]
+            source_args = (*source.args, *( ("--write",) if source.module in WRITE_OPT_IN_MODULES and "--write" not in source.args else () ))
+            sys.argv = [source.module, *source_args]
             result = module.main()
             if inspect.isawaitable(result):
                 await result
@@ -61,6 +104,7 @@ async def run_source(source, allow_paid=False):
         conn = await get_conn()
         try:
             await finish_sync_run(conn, run_id, "completed")
+            await mark_source_synced(conn, source_id)
             await save_checkpoint(conn, source_id, retry_count=0)
         finally:
             await conn.close()
@@ -83,6 +127,7 @@ async def main():
     parser.add_argument("--allow-paid", action="store_true", help="Habilita conectores pagos tras una autorizacion explicita.")
     parser.add_argument("--register-only", action="store_true", help="Registra catalogo y politicas sin ejecutar conectores.")
     parser.add_argument("--retry-incomplete", action="store_true", help="Reintenta solo fuentes cuyo ultimo run fallo o quedo parcial.")
+    parser.add_argument("--due", action="store_true", help="Ejecuta solo fuentes publicas gratuitas cuya frecuencia ya vencio.")
     args = parser.parse_args()
     if args.source:
         selected = [by_name(name) for name in args.source]
@@ -98,10 +143,14 @@ async def main():
             await conn.close()
     else:
         selected = list(SOURCES)
-    await register_sources(selected)
+    # Always register the entire catalog: --due must also see sources never synced.
+    await register_sources()
     if args.register_only:
         print({"registered": len(selected), "executed": 0})
         return
+    if args.due:
+        selected = await due_sources()
+        print({"due": [source.name for source in selected]})
     if not args.include_credentials:
         selected = [s for s in selected if s.mode != "credential"]
     results = [await run_source(source, allow_paid=args.allow_paid) for source in selected]

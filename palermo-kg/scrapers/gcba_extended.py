@@ -120,12 +120,12 @@ async def scrape_dataset(conn, source_id, dataset):
             data = r.json()
         except Exception as e:
             print(f"  ERROR: {e}")
-            return 0
+            return None
 
     features = data.get("features", [])
     if not features:
         print(f"  WARNING: sin features")
-        return 0
+        return None
 
     sample = features[0].get("properties", {})
     print(f"  {len(features)} features | keys: {list(sample.keys())[:10]}")
@@ -216,12 +216,18 @@ async def main():
     print("=== Scraper GCBA Extended ===")
     conn = await get_conn()
     try:
-        source_id = await get_source_id(conn, "ba_data")
+        source_id = await get_source_id(conn, "ba_data_extended")
         total = 0
+        completed = True
         for dataset in DATASETS:
             n = await scrape_dataset(conn, source_id, dataset)
+            if n is None:
+                completed = False
+                continue
             total += n
             await asyncio.sleep(1)
+        if not completed:
+            raise RuntimeError("GCBA Extended quedo parcial; no se marco la fuente como sincronizada")
         await mark_source_synced(conn, source_id)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")
     finally:

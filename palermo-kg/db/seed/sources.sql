@@ -35,7 +35,6 @@ INSERT INTO sources (source_name, source_url, tier) VALUES
     ('transporte_rmba', 'https://datos.gob.ar/dataset/transporte-recorridos-lineas-transporte-region-metropolitana-buenos-aires-rmba', 4),
     ('cep_xxi', 'https://datos.gob.ar/dataset/produccion-distribucion-geografica-establecimientos-productivos', 4),
     ('enacom_context', 'https://datos.gob.ar/dataset?organization=enacom', 4),
-    ('ceamse_context', 'https://portal-andino.datos.gob.ar/dataset/residuos-solidos-urbanos', 4),
     ('national_monuments', 'https://www.argentina.gob.ar/cultura/monumentos', 4)
 ON CONFLICT (source_name) DO NOTHING;
 

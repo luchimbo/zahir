@@ -2,7 +2,7 @@
 Entity Resolver — Palermo Knowledge Graph
 Deduplica entidades canonicas del mismo tipo o tipo cercano cuando representan
 la misma entidad real (ej. "Don Julio" de OSM y "Don Julio Parrilla" de Google
-Places, o "Malba" de Wikidata y "Malba" de espacios culturales).
+Places, o una institución de Wikidata y otra de espacios culturales).
 
 Estrategia:
   1. Agrupa entidades candidatas por tipo de entidad.

@@ -86,7 +86,7 @@ No ejecutar estos frentes hasta que el usuario los reactive explícitamente:
 | `refes_historical.py` | REFES salud histórico | Implementado, solo validación histórica |
 | `sinca_culture.py` | Espacios culturales SINCA | Implementado, fuente histórica |
 | `transporte_rmba.py` | Red transporte RMBA | Implementado, refresh manual |
-| `ceamse_context.py` / `cep_xxi.py` / `enacom_context.py` | Contexto agregado | Implementado, refresh manual |
+| `cep_xxi.py` / `enacom_context.py` | Contexto agregado | Implementado, refresh manual |
 | `link_agc_inspections.py` | Vínculo inspecciones-entidades | Implementado |
 
 El refresh manual de estas fuentes se orquesta con `scripts/refresh_official_sources.py` y se audita con `scripts/source_audit.py` o `GET /api/insights/source-health`.
