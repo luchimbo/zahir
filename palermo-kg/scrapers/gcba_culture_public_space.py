@@ -13,6 +13,7 @@ Datasets:
 No toca datos inmobiliarios.
 """
 
+import argparse
 import asyncio
 import csv
 import io
@@ -27,18 +28,20 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import (
     get_conn,
     get_source_id,
     bulk_get_or_create_entities,
     bulk_upsert_properties,
+    mark_source_synced,
 )
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
-CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
+SUPPORTS_SOURCE_CONTRACT = True
 
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390
+CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
 
 
 def clean(value: Any) -> str:
@@ -60,33 +63,17 @@ def parse_float(value: Any):
         return None
 
 
+CABA_LAT_MIN, CABA_LAT_MAX = -34.706, -34.526
+CABA_LNG_MIN, CABA_LNG_MAX = -58.531, -58.335
+
+
 def valid_lat_lng(lat, lng) -> bool:
     return (
         lat is not None
         and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
+        and CABA_LAT_MIN <= lat <= CABA_LAT_MAX
+        and CABA_LNG_MIN <= lng <= CABA_LNG_MAX
     )
-
-
-def is_palermo_barrio(value: str) -> bool:
-    barrio = (
-        clean(value)
-        .upper()
-        .replace("Á", "A")
-        .replace("É", "E")
-        .replace("Í", "I")
-        .replace("Ó", "O")
-        .replace("Ú", "U")
-    )
-    return "PALERMO" in barrio
-
-
-def is_palermo_with_fallback(barrio_value: str, lat=None, lng=None) -> bool:
-    barrio = clean(barrio_value)
-    if barrio:
-        return is_palermo_barrio(barrio)
-    return valid_lat_lng(lat, lng)
 
 
 def parse_wkt_point(wkt: str):
@@ -148,55 +135,54 @@ def collect_props(row: dict, mapping: dict[str, str | list[str]]) -> dict[str, s
     return collected
 
 
-async def ingest(
-    conn,
-    source_id: str,
-    dataset_name: str,
-    dataset_url: str,
-    rows: list[dict],
-    name_builder,
-    entity_type: str,
-    subtype: str | None,
-    prop_mapping: dict,
-    coord_extractor,
-    subtype_extractor=None,
-):
-    """Ingesta generica con batch helpers."""
-    print(f"-> {dataset_name}: {len(rows)} filas")
+def field_by_key(row: dict, *needles: str) -> str:
+    """Devuelve el primer valor no vacio cuya columna contenga todas las aguja."""
+    for k in row:
+        if k and all(n in k.lower() for n in needles):
+            v = clean(row.get(k))
+            if v:
+                return v
+    return ""
 
+
+def collect_candidates(rows: list[dict], dataset: dict, args) -> list[dict]:
+    """Filtra territorialmente y arma candidatos segun la definicion del dataset."""
     candidates = []
     for row in rows:
-        lat, lng = coord_extractor(row)
-        barrio = ""
-        for k in row:
-            if k and "barrio" in k.lower():
-                barrio = clean(row.get(k))
-                break
-        if not is_palermo_with_fallback(barrio, lat, lng):
+        lat, lng = dataset["coords"](row)
+        if not record_in_scope(
+            lat=lat,
+            lng=lng,
+            row_neighborhood=field_by_key(row, "barrio"),
+            row_commune=field_by_key(row, "comuna"),
+            scope=args.scope,
+            neighborhood=args.neighborhood,
+            commune=args.commune,
+        ):
             continue
 
-        name = normalize_name(name_builder(row))
+        name = normalize_name(dataset["name_builder"](row))
         if not name:
             continue
 
-        final_subtype = subtype
-        if subtype_extractor:
-            final_subtype = subtype_extractor(row, subtype)
+        final_subtype = dataset["subtype"]
+        if dataset.get("subtype_extractor"):
+            final_subtype = dataset["subtype_extractor"](row, dataset["subtype"])
 
-        props = collect_props(row, prop_mapping)
         candidates.append({
             "name": name,
-            "entity_type": entity_type,
+            "entity_type": dataset["entity_type"],
             "subtype": final_subtype,
             "lat": lat,
             "lng": lng,
-            "origin_url": dataset_url,
-            "props": props,
+            "origin_url": dataset["url"],
+            "props": collect_props(row, dataset["prop_map"]),
         })
+    return candidates
 
-    print(f"  {len(candidates)} candidatas Palermo")
-    if not candidates:
-        return 0
+
+async def write_candidates(conn, source_id: str, dataset: dict, candidates: list[dict]) -> None:
+    """Escribe entidades y propiedades de un dataset ya filtrado y acotado."""
 
     entity_records = [
         {
@@ -228,7 +214,7 @@ async def ingest(
                 "value": value,
                 "value_type": vtype,
                 "confidence": 0.95,
-                "origins": [dataset_url],
+                "origins": [dataset["url"]],
             })
 
     await bulk_upsert_properties(conn, prop_records, source_id)
@@ -240,7 +226,7 @@ async def ingest(
             SET origin_url = COALESCE(origin_url, $1)
             WHERE id = ANY($2::uuid[])
             """,
-            dataset_url,
+            dataset["url"],
             entity_ids,
         )
         await conn.executemany(
@@ -258,8 +244,7 @@ async def ingest(
                 for p in prop_records
             ],
         )
-    print(f"  OK: {len(candidates)} entidades de {dataset_name}")
-    return len(candidates)
+    print(f"  OK: {len(candidates)} entidades de {dataset['name']}")
 
 
 # ── Dataset: espacios culturales ─────────────────────────────────────────────
@@ -506,8 +491,11 @@ DATASETS = [
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="BA Data cultura y espacio publico")
+    add_source_arguments(parser)
+    args, unknown = parser.parse_known_args()
+    selected = set(unknown)
     print("=== Scraper GCBA Cultura y Espacio Publico ===")
-    selected = set(sys.argv[1:])
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
@@ -516,21 +504,17 @@ async def main():
             if selected and dataset["name"] not in selected:
                 continue
             rows = fetch_csv(dataset["url"], dataset["delimiter"])
-            n = await ingest(
-                conn,
-                source_id,
-                dataset["name"],
-                dataset["url"],
-                rows,
-                dataset["name_builder"],
-                dataset["entity_type"],
-                dataset["subtype"],
-                dataset["prop_map"],
-                dataset["coords"],
-                dataset.get("subtype_extractor"),
-            )
-            total += n
+            candidates = collect_candidates(rows, dataset, args)
+            candidates = bounded(candidates, args.limit)
+            if candidates:
+                if not args.write:
+                    print(f"  [dry-run] {len(candidates)} entidades de {dataset['name']}")
+                else:
+                    await write_candidates(conn, source_id, dataset, candidates)
+            total += len(candidates)
             await asyncio.sleep(0.5)
+        if args.write:
+            await mark_source_synced(conn, source_id)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")
     finally:
         await conn.close()

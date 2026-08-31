@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Query as Q
+from fastapi import APIRouter, HTTPException, Query as Q
 from api.db import get_pool
+from api.geography import geography_for_entities, geography_join, resolve_scope_ids
 from api.query_log import log_query
 
 router = APIRouter(tags=["query"])
@@ -19,6 +20,8 @@ async def knowledge_query(
     outdoor:     bool | None = None,
     pet_friendly: bool | None = None,
     geocoded:    bool | None = None,
+    neighborhood: str | None = None,
+    commune: int | None = Q(default=None, ge=1, le=15),
     limit:       int = Q(default=20, ge=1, le=100),
     offset:      int = Q(default=0, ge=0),
 ):
@@ -30,6 +33,12 @@ async def knowledge_query(
     async with pool.acquire() as conn:
         conditions = ["e.is_active = true", "e.canonical_id IS NULL"]
         params = []
+        try:
+            neighborhood_id, commune_id, _, _ = await resolve_scope_ids(conn, neighborhood, commune)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if scope_condition := geography_join(neighborhood_id, commune_id):
+            conditions.append(scope_condition)
 
         if entity_type:
             params.append(entity_type)
@@ -97,6 +106,7 @@ async def knowledge_query(
             """
 
         rows = await conn.fetch(sql, *params)
+        geography = await geography_for_entities(conn, [str(row["id"]) for row in rows])
         total_sql = (
             f"SELECT COUNT(DISTINCT e.id) FROM entities e {joins} JOIN tags t ON t.entity_id=e.id WHERE {tagged_where}"
             if tag else f"SELECT COUNT(DISTINCT e.id) FROM entities e {joins} WHERE {where}"
@@ -117,5 +127,5 @@ async def knowledge_query(
         "total":  total,
         "limit":  limit,
         "offset": offset,
-        "rows":   [dict(r) for r in rows],
+        "rows":   [{**dict(r), "geography": geography.get(r["id"], {"neighborhood": None, "commune": None})} for r in rows],
     }

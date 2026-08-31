@@ -33,3 +33,7 @@ def test_scheduled_refresh_does_not_enable_paid_or_approval_sources():
 def test_new_official_public_sources_are_registered_for_automation():
     names = {source.name for source in SOURCES}
     assert {"gcba_parcels", "gcba_urban_documents", "gcba_productoras", "gcba_sports"} <= names
+
+
+def test_source_pilots_are_opt_in_contracts():
+    assert all(source.pilot_limit > 0 for source in SOURCES)

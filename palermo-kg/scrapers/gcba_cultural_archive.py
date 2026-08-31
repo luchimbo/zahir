@@ -1,4 +1,4 @@
-"""Ingesta actividades culturales históricas de Palermo como HistoricalRecord."""
+"""Ingesta actividades culturales históricas de CABA como HistoricalRecord."""
 import argparse
 import asyncio
 import sys
@@ -10,8 +10,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-cultura/actividades-culturales/actividades-culturales-2022.geojson"
 
@@ -27,34 +31,52 @@ def coordinate(value):
         return None
 
 
-async def main():
+async def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--write", action="store_true")
-    args = parser.parse_args()
+    add_source_arguments(parser)
+    return parser.parse_args()
+
+
+async def main():
+    args = parse_args()
     async with httpx.AsyncClient(timeout=90) as client:
         response = await client.get(URL)
         response.raise_for_status()
         features = response.json().get("features", [])
 
-    candidates = []
+    rows = []
     for feature in features:
         data = feature.get("properties") or {}
-        if clean(data.get("barrio")).upper() != "PALERMO":
-            continue
         record_id = clean(data.get("id"))
         title = normalize_name(clean(data.get("actividad")))
         if not record_id or not title:
+            continue
+        rows.append((record_id, title, data))
+
+    candidates = []
+    for record_id, title, data in rows:
+        lat = coordinate(data.get("lat"))
+        lng = coordinate(data.get("long"))
+        if not record_in_scope(
+            lat=lat,
+            lng=lng,
+            row_neighborhood=clean(data.get("barrio")),
+            scope=args.scope,
+            neighborhood=args.neighborhood,
+            commune=args.commune,
+        ):
             continue
         candidates.append({
             "name": f"Actividad Cultural {title} (GCBA {record_id})",
             "entity_type": "HistoricalRecord",
             "subtype": "cultural_activity_archive",
-            "lat": coordinate(data.get("lat")),
-            "lng": coordinate(data.get("long")),
+            "lat": lat,
+            "lng": lng,
             "origin_url": URL,
             "values": (
                 ("title", title, "string"), ("venue", clean(data.get("lugar")), "string"),
-                ("address", clean(data.get("direccion")), "string"), ("neighborhood", "Palermo", "string"),
+                ("address", clean(data.get("direccion")), "string"),
+                ("neighborhood", clean(data.get("barrio")) or "CABA", "string"),
                 ("start_date", clean(data.get("fecha_ini")), "date"), ("end_date", clean(data.get("fecha_fin")), "date"),
                 ("activity_type", clean(data.get("tipo_actividad")), "string"),
                 ("discipline", clean(data.get("disciplina")), "string"),
@@ -62,8 +84,11 @@ async def main():
                 ("source_url", clean(data.get("Links")), "url"),
             ),
         })
-    print(f"Actividades culturales históricas de Palermo: {len(candidates)}")
+    candidates = bounded(candidates, args.limit)
+    print(f"Actividades culturales históricas de CABA: {len(candidates)}")
     if not args.write:
+        for candidate in candidates[:5]:
+            print(f"  - {candidate['name']} lat={candidate['lat']} lng={candidate['lng']}")
         return
     conn = await get_conn()
     try:

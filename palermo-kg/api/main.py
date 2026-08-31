@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from api.db import get_pool, close_pool
-from api.routers import entity, insights, query, search, search_natural
+from api.routers import entity, geographies, insights, query, search, search_natural
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -15,12 +15,13 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 app = FastAPI(
-    title="Palermo Knowledge Graph API",
+    title="CABA Knowledge Graph API",
     version="0.1.0",
     lifespan=lifespan,
 )
 
 app.include_router(entity.router, prefix="/api")
+app.include_router(geographies.router, prefix="/api")
 app.include_router(insights.router, prefix="/api")
 app.include_router(query.router,  prefix="/api")
 app.include_router(search.router, prefix="/api")

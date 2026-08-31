@@ -9,7 +9,7 @@ Este scraper:
   3. Para cada norma que coincida, descarga su PDF específico.
   4. Extrae el texto del PDF utilizando PyMuPDF (fitz).
   5. Envía el texto a DeepSeek (vía OpenRouter) para extraer entidades estructuradas (Obras, Fiestas/Ferias, Clausuras, Comercios, etc.).
-  6. Registra/actualiza las entidades en la base de datos de Palermo.
+   6. Registra/actualiza las entidades en la base de datos de CABA.
 """
 
 import asyncio
@@ -36,9 +36,14 @@ except ImportError:
     HAS_PYMUPDF = False
 
 from scrapers.shared.db_helpers import (
-    get_conn, get_or_create_entity, upsert_property, get_source_id
+    get_conn, get_or_create_entity, upsert_property, ensure_source
 )
+from scrapers.shared.contract import add_source_arguments, bounded
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value, clean_cuit
+import geography_catalog as GEO
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 load_dotenv()
 
@@ -46,20 +51,22 @@ OR_MODEL = "deepseek/deepseek-v4-flash"
 CACHE_DIR = Path("scrapers/boletin_caba_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-# Cliente de OpenRouter
-llm = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-)
+_llm_client = None
+
+def _get_llm() -> OpenAI:
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        )
+    return _llm_client
 
 # Palabras clave para filtrado inicial de metadatos (evita descargar PDFs irrelevantes)
-PALERMO_KEYWORDS = re.compile(
-    r"PALERMO|COMUNA\s*14|SOHO|ARMENIA|HONDURAS|GURRUCHAGA|THAMES|SERRANO|"
-    r"FITZ\s*ROY|MALABIA|GODOY\s*CRUZ|NICARAGUA|COSTA\s*RICA|"
-    r"EL\s*SALVADOR|GUATEMALA|CABRERA|URIARTE|HUMBOLDT|BONPLAND|"
-    r"JULIAN\s*ALVAREZ",
-    re.IGNORECASE
-)
+CABA_KEYWORDS = re.compile("|".join(
+    [r"COMUNA\s*\d{1,2}"]
+    + [re.escape(name) for name in GEO.COMMUNES]
+), re.IGNORECASE)
 
 # ── Extracción recursiva de la jerarquía de normas del JSON de BOCBA ──────────
 
@@ -118,7 +125,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 # ── Estructuración mediante LLM ──────────────────────────────────────────────
 
 EXTRACTION_PROMPT = """Sos un extractor de datos del Boletín Oficial de la Ciudad de Buenos Aires (CABA).
-Del siguiente bloque de texto (que corresponde a una norma particular), extraé la información relevante sobre entidades físicas o jurídicas, locales, obras, permisos, multas, clausuras o eventos ubicados o con impacto directo en Palermo, CABA.
+Del siguiente bloque de texto (que corresponde a una norma particular), extraé la información relevante sobre entidades físicas o jurídicas, locales, obras, permisos, multas, clausuras o eventos ubicados o con impacto directo en CABA.
 
 Devolvé un JSON con esta estructura (sin texto extra, solo el JSON):
 {
@@ -128,7 +135,7 @@ Devolvé un JSON con esta estructura (sin texto extra, solo el JSON):
       "nombre": "Nombre descriptivo de la entidad, local o sujeto (ej: 'Obra Godoy Cruz 2869', 'Puesto Feria Palermo Viejo', 'Mantelectric Corp')",
       "razon_social": "Razón social del titular o empresa involucrada (si aparece)",
       "cuit": "XX-XXXXXXXX-X (si aparece)",
-      "domicilio": "Dirección en Palermo o Comuna 14 (calle y número aproximado)",
+      "domicilio": "Dirección en CABA (calle y número aproximado)",
       "rubro": "Actividad, rubro o tipo de obra (ej: 'Venta de artesanías', 'Obra Nueva', 'Extracción de árboles')",
       "descripcion": "Resumen conciso y claro de lo dispuesto en la norma (ej: 'Se aprueba factibilidad de obra nueva residencial', 'Se autoriza suplencia en puesto de feria')",
       "nro_expediente": "Número de expediente (si aparece)",
@@ -137,7 +144,7 @@ Devolvé un JSON con esta estructura (sin texto extra, solo el JSON):
   ]
 }
 
-Si no encontrás ninguna entidad en Palermo o Comuna 14 dentro del texto, devolvé {"entidades": []}.
+Si no encontrás ninguna entidad en CABA dentro del texto, devolvé {"entidades": []}.
 Texto:
 """
 
@@ -148,7 +155,7 @@ def llm_extract_bocba(text: str) -> list[dict]:
         return []
         
     try:
-        resp = llm.chat.completions.create(
+        resp = _get_llm().chat.completions.create(
             model=OR_MODEL,
             messages=[{"role": "user", "content": EXTRACTION_PROMPT + text[:4000]}],
             max_tokens=1000,
@@ -233,7 +240,7 @@ async def insert_bocba_entidad(conn, entidad: dict, source_id: str, origen_url: 
 
 # ── Ejecución del Scraper ─────────────────────────────────────────────────────
 
-async def scrape_bocba(conn, source_id: str, dias_atras: int = 7):
+async def scrape_bocba(conn, source_id: str, dias_atras: int = 7, limit: int | None = None):
     if not HAS_PYMUPDF:
         print("  [skip] PyMuPDF no disponible. Por favor instala pymupdf.")
         return
@@ -266,14 +273,15 @@ async def scrape_bocba(conn, source_id: str, dias_atras: int = 7):
             print("  Sin normas en el boletin de esta fecha.")
             continue
 
-        # Filtrar normas que mencionan Palermo en metadatos
+        # Filtrar normas que mencionan CABA en metadatos
         matching_norms = []
         for n in all_norms:
             text_meta = f"{n.get('nombre', '')} {n.get('sumario', '')}"
-            if PALERMO_KEYWORDS.search(text_meta):
+            if CABA_KEYWORDS.search(text_meta):
                 matching_norms.append(n)
 
-        print(f"  Total normas: {len(all_norms)} | Coinciden con Palermo: {len(matching_norms)}")
+        matching_norms = bounded(matching_norms, limit)
+        print(f"  Total normas: {len(all_norms)} | Coinciden con CABA: {len(matching_norms)}")
 
         for norm in matching_norms:
             norm_id = norm.get("id_norma")
@@ -298,7 +306,7 @@ async def scrape_bocba(conn, source_id: str, dias_atras: int = 7):
             # 3. Extraer estructurado usando LLM
             entidades = llm_extract_bocba(text)
             if not entidades:
-                print("    Sin entidades identificadas en Palermo por el LLM.")
+                print("    Sin entidades identificadas en CABA por el LLM.")
                 continue
 
             # 4. Registrar en la DB
@@ -313,32 +321,18 @@ async def scrape_bocba(conn, source_id: str, dias_atras: int = 7):
 
 async def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Scraper Boletín Oficial CABA (BOCBA) — Palermo KG")
+    parser = argparse.ArgumentParser(description="Scraper Boletín Oficial CABA (BOCBA) — CABA KG")
     parser.add_argument("--dias", type=int, default=3,
                         help="Cuántos días hacia atrás procesar (default: 3)")
+    add_source_arguments(parser)
     args = parser.parse_args()
 
     print(f"=== Scraper Boletin Oficial CABA (BOCBA) — Ultimos {args.dias} dias ===\n")
 
     conn = await get_conn()
     try:
-        # Registrar fuente si no existe
-        existing = await conn.fetchval(
-            "SELECT id FROM sources WHERE source_name = 'boletin_oficial'"
-        )
-        if not existing:
-            await conn.execute(
-                """
-                INSERT INTO sources (source_name, source_url, tier, is_reliable)
-                VALUES ('boletin_oficial', 'https://boletinoficial.buenosaires.gob.ar', 3, true)
-                ON CONFLICT DO NOTHING
-                """
-            )
-            
-        source_id = await conn.fetchval(
-            "SELECT id::text FROM sources WHERE source_name = 'boletin_oficial'"
-        )
-        await scrape_bocba(conn, source_id, dias_atras=args.dias)
+        source_id = await ensure_source(conn, "boletin_oficial", "https://boletinoficial.buenosaires.gob.ar", tier=3)
+        await scrape_bocba(conn, source_id, dias_atras=args.dias, limit=args.limit)
     finally:
         await conn.close()
 

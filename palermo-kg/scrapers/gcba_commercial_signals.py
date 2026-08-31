@@ -12,6 +12,7 @@ Datasets:
 No carga listings inmobiliarios ni precios residenciales.
 """
 
+import argparse
 import asyncio
 import csv
 import io
@@ -35,9 +36,10 @@ from scrapers.shared.db_helpers import (
     mark_source_synced,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments
+from scrapers.shared.geo_scope import point_in_caba, record_in_scope
 
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390
+SUPPORTS_SOURCE_CONTRACT = True
 
 HABILITACIONES_URL = (
     "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/"
@@ -105,12 +107,7 @@ def parse_float(value: Any) -> float | None:
 
 
 def valid_lat_lng(lat: float | None, lng: float | None) -> bool:
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
-    )
+    return point_in_caba(lat, lng)
 
 
 def parse_wkt_centroid(wkt: str) -> tuple[float | None, float | None]:
@@ -217,13 +214,14 @@ async def upsert_candidates(conn, source_id: str, candidates: list[dict], chunk_
     return total
 
 
-async def ingest_habilitaciones(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def ingest_habilitaciones(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     print("-> Habilitaciones aprobadas AGC 2026...")
     rows = await fetch_csv(client, HABILITACIONES_URL, delimiter=";")
     candidates = []
     seen = set()
     for row in rows:
-        if clean(row.get("comuna")) != "14":
+        if not record_in_scope(row_neighborhood=row.get("barrio"), row_commune=row.get("comuna"),
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
         razon = normalize_name(row.get("razon_social"))
         rubro = normalize_value(row.get("rubro"))
@@ -244,7 +242,7 @@ async def ingest_habilitaciones(conn, source_id: str, client: httpx.AsyncClient)
                 "legal_name": razon,
                 "business_activity": rubro,
                 "address": domicilio,
-                "commune": "14",
+                "commune": clean(row.get("comuna")),
                 "postal_code": clean(row.get("cod_postal_titular")),
                 "property_parcel_id": clean(row.get("nropartidamatriz")),
                 "phone": clean(row.get("telefono")),
@@ -253,11 +251,11 @@ async def ingest_habilitaciones(conn, source_id: str, client: httpx.AsyncClient)
             },
         })
 
-    print(f"  {len(candidates)} habilitaciones de Comuna 14")
+    print(f"  {len(candidates)} habilitaciones de {args.scope}")
     return await upsert_candidates(conn, source_id, candidates, chunk_size=500)
 
 
-async def ingest_moc(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def ingest_moc(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     print("-> Mapa de Oportunidades Comerciales (MOC)...")
     geojson = await fetch_geojson(client, MOC_ZONAS_GEOJSON_URL)
     zone_coords = {}
@@ -265,7 +263,7 @@ async def ingest_moc(conn, source_id: str, client: httpx.AsyncClient) -> int:
         props = feature.get("properties") or {}
         zone_id = clean(props.get("zone_id") or props.get("MOC_ZONAS_ID"))
         lat, lng = geojson_centroid(feature.get("geometry"))
-        if zone_id and valid_lat_lng(lat, lng):
+        if zone_id and record_in_scope(lat=lat, lng=lng, scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             zone_coords[zone_id] = (lat, lng)
 
     zonas = {clean(r.get("MOC_ZONAS_ID")): r for r in await fetch_csv(client, MOC_ZONAS_URL)}
@@ -318,7 +316,7 @@ async def ingest_moc(conn, source_id: str, client: httpx.AsyncClient) -> int:
             props[f"{prefix}_closing_index"] = clean(rubro_row.get("INDICE_CIERRE"))
 
         candidates.append({
-            "name": f"Zona Comercial MOC {zone_id} - Palermo",
+            "name": f"Zona Comercial MOC {zone_id}",
             "entity_type": "Location",
             "subtype": "moc_zona_comercial",
             "lat": lat,
@@ -327,20 +325,21 @@ async def ingest_moc(conn, source_id: str, client: httpx.AsyncClient) -> int:
             "props": props,
         })
 
-    print(f"  {len(candidates)} zonas MOC con centroide en Palermo")
+    print(f"  {len(candidates)} zonas MOC con centroide en {args.scope}")
     return await upsert_candidates(conn, source_id, candidates, chunk_size=200)
 
 
-async def ingest_decks(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def ingest_decks(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     print("-> Calzada gastronomica (decks permitidos)...")
     rows = await fetch_csv(client, DECKS_URL, delimiter=",")
     candidates = []
     for row in rows:
-        barrio = strip_accents(clean(row.get("BARRIO"))).upper()
-        comuna = strip_accents(clean(row.get("COMUNA"))).upper()
-        if "PALERMO" not in barrio and comuna != "COMUNA 14":
-            continue
+        barrio = clean(row.get("BARRIO"))
+        comuna = clean(row.get("COMUNA"))
         lat, lng = parse_wkt_centroid(row.get("WKT"))
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=barrio, row_commune=comuna,
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
+            continue
         street = normalize_value(row.get("nomoficial"))
         if not street:
             continue
@@ -358,24 +357,25 @@ async def ingest_decks(conn, source_id: str, client: httpx.AsyncClient) -> int:
                 "street": street,
                 "from_address_number": alt_ini,
                 "to_address_number": alt_fin,
-                "neighborhood": "Palermo",
-                "commune": "14",
+                "neighborhood": barrio,
+                "commune": comuna,
             },
         })
 
-    print(f"  {len(candidates)} tramos habilitados para decks en Palermo")
+    print(f"  {len(candidates)} tramos habilitados para decks en {args.scope}")
     return await upsert_candidates(conn, source_id, candidates, chunk_size=500)
 
 
-async def ingest_permisos_gastro(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def ingest_permisos_gastro(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     print("-> Permisos de uso de espacio publico gastronomico...")
     rows = await fetch_csv(client, PERMISOS_GASTRO_URL, delimiter=";")
     candidates = []
     seen = set()
     for row in rows:
-        barrio = strip_accents(clean(row.get("Barrio"))).upper()
+        barrio = clean(row.get("Barrio"))
         comuna = clean(row.get("Comuna"))
-        if "PALERMO" not in barrio and comuna != "14":
+        if not record_in_scope(row_neighborhood=barrio, row_commune=comuna,
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
         solicitante = normalize_name(row.get("SOLICITANTE"))
         street = normalize_value(row.get("Direcci\uFFFDn") or row.get("Dirección"))
@@ -400,8 +400,8 @@ async def ingest_permisos_gastro(conn, source_id: str, client: httpx.AsyncClient
                 "address": f"{street} {altura}".strip(),
                 "street": street,
                 "street_number": altura,
-                "neighborhood": "Palermo",
-                "commune": "14",
+                "neighborhood": barrio,
+                "commune": comuna,
                 "sidewalk_status": clean(row.get("Estado Vereda")),
                 "resolution": clean(row.get("N\uFFFD de Dispo / Reso") or row.get("N° de Dispo / Reso")),
                 "start_date": clean(row.get("Fecha de Inicio")),
@@ -411,16 +411,23 @@ async def ingest_permisos_gastro(conn, source_id: str, client: httpx.AsyncClient
             },
         })
 
-    print(f"  {len(candidates)} permisos gastronomicos en Palermo")
+    print(f"  {len(candidates)} permisos gastronomicos en {args.scope}")
     return await upsert_candidates(conn, source_id, candidates, chunk_size=500)
 
 
 async def main():
     print("=== Scraper GCBA Senales Comerciales ===")
-    selected = set(sys.argv[1:])
+    parser = argparse.ArgumentParser()
+    add_source_arguments(parser)
+    parser.add_argument("--dataset", action="append", choices=("habilitaciones", "moc", "decks", "permisos_gastro"))
+    args = parser.parse_args()
+    selected = set(args.dataset or [])
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
+        if not args.write:
+            print("Validación completada; usar --write para persistir.")
+            return
         total = 0
         async with httpx.AsyncClient(follow_redirects=True, timeout=180) as client:
             jobs = {
@@ -432,7 +439,7 @@ async def main():
             for name, func in jobs.items():
                 if selected and name not in selected:
                     continue
-                total += await func(conn, source_id, client)
+                total += await func(conn, source_id, client, args)
                 await asyncio.sleep(0.5)
         await mark_source_synced(conn, source_id)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")

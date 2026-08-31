@@ -55,6 +55,20 @@ export type SearchEntity = {
   score?: number | null;
   importance?: number | null;
   properties?: Property[];
+  geography?: { neighborhood?: string | null; commune?: string | null };
+};
+
+export type Geography = {
+  name: string;
+  slug: string;
+  level: "city" | "commune" | "neighborhood";
+  commune: number | null;
+};
+
+export type GeographiesPayload = {
+  city: Geography;
+  communes: Geography[];
+  neighborhoods: Geography[];
 };
 
 export type SearchPayload = {

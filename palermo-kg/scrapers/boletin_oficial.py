@@ -20,12 +20,18 @@ import asyncio
 import json
 import os
 import re
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
 from openai import OpenAI
 from dotenv import load_dotenv
+
+# Configurar path del proyecto para importar modulos compartidos
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 load_dotenv()
 
@@ -40,22 +46,36 @@ from scrapers.shared.db_helpers import (
     ensure_source, get_conn, get_or_create_entity, mark_source_synced, upsert_property
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value, clean_cuit
+from scrapers.shared.contract import add_source_arguments, bounded
+from scrapers.shared.geo_scope import record_in_scope
+import geography_catalog as GEO
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 OR_MODEL  = "deepseek/deepseek-v4-flash"
 CACHE_DIR = Path("scrapers/boletin_cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-llm = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-)
+_llm_client = None
 
-# Palabras clave para filtrar bloques relevantes
-PALERMO_KEYWORDS = re.compile(
-    r"PALERMO|SOHO|ARMENIA|HONDURAS|GURRUCHAGA|THAMES|SERRANO|"
-    r"FITZ\s*ROY|MALABIA|GODOY\s*CRUZ|NICARAGUA|COSTA\s*RICA|"
-    r"EL\s*SALVADOR|GUATEMALA|CABRERA|URIARTE|HUMBOLDT|BONPLAND|"
-    r"JULIAN\s*ALVAREZ|1425|1414|1426|1427",
+def _get_llm() -> OpenAI:
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+        )
+    return _llm_client
+
+# Palabras clave para filtrar bloques relevantes (ámbitodo CABA)
+CABA_KEYWORDS = re.compile(
+    r"COMUNA\s*\d{1,2}|"
+    + "|".join(re.escape(n) for n in GEO.COMMUNES) + "|"
+    r"PALERMO|SOHO|ARMENIA|HONDURAS|THAMES|SERRANO|"
+    r"FITZ\s*ROY|RECOLETA|BELGRANO|VILLA\s*CRUCEL|ALMAGRO|"
+    r"BELLVISTE|BALVANERA|MATRADA|MONTE\s*CASTRO|PARQUE\s*PATRICIOS|"
+    r"FLORIDA|VEGA|COLEGIO|ABASTO|CASTELLANOS|PABLO|PABLO\s*ALVAREZ|"
+    r"1425|1414|1426|1427",
     re.IGNORECASE
 )
 
@@ -119,16 +139,16 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
         return ""
 
 
-def filter_palermo_blocks(text: str) -> list[str]:
-    """Extrae bloques de texto que mencionan Palermo o sus calles."""
+def filter_bloques_caba(text: str) -> list[str]:
+    """Extrae bloques de texto que mencionan cualquier comuna o zona de CABA."""
     blocks = re.split(r"\n{2,}", text)
-    return [b.strip() for b in blocks if PALERMO_KEYWORDS.search(b) and len(b.strip()) > 50]
+    return [b.strip() for b in blocks if CABA_KEYWORDS.search(b) and len(b.strip()) > 50]
 
 
 # ── Extracción estructurada con LLM ──────────────────────────────────────────
 
 EXTRACTION_PROMPT = """Sos un extractor de datos del Boletín Oficial argentino.
-Del siguiente bloque de texto, extraé SOLO la información sobre entidades en Palermo, CABA.
+Del siguiente bloque de texto, extraé SOLO la información sobre entidades localizadas en el ámbito de CABA.
 
 Devolvé un JSON con esta estructura (sin texto extra, solo el JSON):
 {
@@ -138,7 +158,7 @@ Devolvé un JSON con esta estructura (sin texto extra, solo el JSON):
       "nombre": "nombre de la entidad o marca",
       "razon_social": "razón social si es sociedad",
       "cuit": "XX-XXXXXXXX-X si aparece",
-      "domicilio": "dirección en Palermo",
+      "domicilio": "dirección en CABA",
       "actividad": "rubro o actividad",
       "descripcion": "resumen breve de lo publicado",
       "nro_expediente": "si aparece"
@@ -146,7 +166,7 @@ Devolvé un JSON con esta estructura (sin texto extra, solo el JSON):
   ]
 }
 
-Si no hay entidades relevantes, devolvé {"entidades": []}.
+Si no hay entidades relevantes en CABA, devolvé {"entidades": []}.
 
 Texto:
 """
@@ -154,7 +174,7 @@ Texto:
 
 def llm_extract(block: str) -> list[dict]:
     try:
-        resp = llm.chat.completions.create(
+        resp = _get_llm().chat.completions.create(
             model=OR_MODEL,
             messages=[{"role": "user", "content": EXTRACTION_PROMPT + block[:3000]}],
             max_tokens=1000,
@@ -218,7 +238,7 @@ async def insert_entidad(conn, entidad: dict, source_id: str, origen_url: str):
 
 # ── Scraper principal ─────────────────────────────────────────────────────────
 
-async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
+async def scrape_boletin(conn, source_id: str, dias_atras: int = 7, limit: int | None = None):
     if not HAS_PYMUPDF:
         print("  [skip] PyMuPDF no disponible. Instalar con: pip install pymupdf")
         return False
@@ -243,7 +263,9 @@ async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
 
         print(f"  {len(publicaciones)} publicaciones encontradas")
 
-        for pub in publicaciones[:MAX_PUBLICATIONS_PER_DAY]:
+        pub_to_process = bounded(publicaciones, limit)
+
+        for pub in pub_to_process[:MAX_PUBLICATIONS_PER_DAY]:
             pub_id  = str(pub.get("id") or pub.get("nroNorma") or "")
             pdf_url = pub.get("pdf_url") or pub.get("urlPdf") or ""
 
@@ -258,14 +280,14 @@ async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
             if not text:
                 continue
 
-            blocks = filter_palermo_blocks(text)
-            if not blocks:
+            bloques = filter_bloques_caba(text)
+            if not bloques:
                 continue
 
-            print(f"  {len(blocks)} bloques con menciones de Palermo en pub {pub_id}")
+            print(f"  {len(bloques)} bloques con menciones de CABA en pub {pub_id}")
 
-            for block in blocks:
-                entidades = llm_extract(block)
+            for bloque in bloques:
+                entidades = llm_extract(bloque)
                 for ent in entidades:
                     await insert_entidad(conn, ent, source_id, pdf_url)
                     total_entidades += 1
@@ -278,7 +300,8 @@ async def scrape_boletin(conn, source_id: str, dias_atras: int = 7):
 
 async def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Scraper Boletín Oficial — Palermo KG")
+    parser = argparse.ArgumentParser(description="Scraper Boletín Oficial — CABA KG")
+    add_source_arguments(parser)
     parser.add_argument("--dias", type=int, default=7,
                         help="Cuántos días hacia atrás procesar (default: 7)")
     args = parser.parse_args()
@@ -288,7 +311,7 @@ async def main():
     conn = await get_conn()
     try:
         source_id = await ensure_source(conn, "boletin_oficial", "https://www.boletinoficial.gob.ar", 3)
-        completed = await scrape_boletin(conn, source_id, dias_atras=args.dias)
+        completed = await scrape_boletin(conn, source_id, dias_atras=args.dias, limit=args.limit)
         if completed:
             await mark_source_synced(conn, source_id)
         else:

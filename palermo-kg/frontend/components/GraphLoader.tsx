@@ -10,7 +10,7 @@ export default function GraphLoader() {
       <div className="edge edge-2" />
       <div className="edge edge-3" />
       <div className="edge edge-4" />
-      <p>Buscando en el grafo de Palermo...</p>
+      <p>Buscando en el grafo de CABA...</p>
     </div>
   );
 }

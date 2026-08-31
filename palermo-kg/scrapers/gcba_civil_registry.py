@@ -1,4 +1,4 @@
-"""Sedes del Registro Civil y Centros de Documentación Rápida de Palermo."""
+"""Sedes del Registro Civil y Centros de Documentación Rápida de CABA."""
 import argparse
 import asyncio
 import csv
@@ -11,8 +11,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 URLS = [
  "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-gobierno/registro-civil/centros-de-documentacion-rapida.csv",
@@ -24,22 +28,34 @@ def num(v):
     try: return float(v)
     except (TypeError, ValueError): return None
 
+def parse_args():
+    parser=argparse.ArgumentParser(description="Scraper Registro Civil / CDR (CABA)")
+    add_source_arguments(parser)
+    return parser.parse_args()
+
 async def main():
-    parser=argparse.ArgumentParser(); parser.add_argument('--write',action='store_true'); args=parser.parse_args()
+    args=parse_args()
     candidates=[]
     async with httpx.AsyncClient(timeout=60) as client:
         for url in URLS:
             r=await client.get(url); r.raise_for_status()
             rows=csv.DictReader(io.StringIO(r.content.decode('utf-8-sig','replace')),delimiter=';')
             for row in rows:
-                if clean(row.get('BARRIO')).upper()!='PALERMO' and clean(row.get('COMUNA')).upper()!='COMUNA 14': continue
+                neighborhood=clean(row.get('BARRIO'))
+                commune=clean(row.get('COMUNA'))
+                lat=num(row.get('LAT')); lng=num(row.get('LNG'))
+                if not record_in_scope(lat=lat,lng=lng,
+                                       row_neighborhood=neighborhood,row_commune=commune,
+                                       scope=args.scope,neighborhood=args.neighborhood,commune=args.commune):
+                    continue
                 name=normalize_name(clean(row.get('CENTRO RAPIDO')) or clean(row.get('SEDE')) or clean(row.get('NOMBRE')))
                 address=clean(row.get('DIRECCION'))
                 if not name or not address: continue
                 candidates.append({'name':f"Registro Civil {name} - {address}",'entity_type':'Facility','subtype':'civil_registry_office',
-                  'lat':num(row.get('LAT')),'lng':num(row.get('LNG')),'origin_url':url,
-                  'values':(('address',address),('phone',clean(row.get('TEL'))),('hours_open',clean(row.get('HORARIO'))),('services',clean(row.get('TRAMITE'))),('neighborhood','Palermo'))})
-    print(f"Sedes de Registro Civil/CDR en Palermo: {len(candidates)}")
+                  'lat':lat,'lng':lng,'origin_url':url,
+                  'values':(('address',address),('phone',clean(row.get('TEL'))),('hours_open',clean(row.get('HORARIO'))),('services',clean(row.get('TRAMITE'))),('neighborhood',neighborhood),('commune',commune))})
+    candidates=bounded(candidates,args.limit)
+    print(f"Sedes de Registro Civil/CDR ({args.scope}): {len(candidates)}")
     if not args.write: return
     conn=await get_conn()
     try:

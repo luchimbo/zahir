@@ -6,6 +6,7 @@ Tier 1 - datasets oficiales CSV sin autenticacion.
 Dataset: puntos-wi-fi-publicos
 """
 
+import argparse
 import asyncio
 import csv
 import io
@@ -18,18 +19,20 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import (
     get_conn,
     get_source_id,
     bulk_get_or_create_entities,
     bulk_upsert_properties,
+    mark_source_synced,
 )
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
-WIFI_CSV_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/jefatura-de-gabinete-de-ministros/puntos-wi-fi-publicos/sitios-de-wifi.csv"
+SUPPORTS_SOURCE_CONTRACT = True
 
-LAT_MIN, LAT_MAX = -34.615, -34.555
-WIND_MIN, WIND_MAX = -58.455, -58.390  # Bounding box de Palermo
+WIFI_CSV_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/jefatura-de-gabinete-de-ministros/puntos-wi-fi-publicos/sitios-de-wifi.csv"
 
 
 def clean(value) -> str:
@@ -51,21 +54,15 @@ def parse_float(value):
         return None
 
 
-def is_palermo(row: dict, lat, lng) -> bool:
-    barrio = clean(row.get("barrio", "")).upper()
-    comuna = clean(row.get("comuna", "")).upper()
-    if "PALERMO" in barrio or "14" in comuna:
-        return True
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and WIND_MIN <= lng <= WIND_MAX
-    )
+def parse_args():
+    parser = argparse.ArgumentParser(description="Scraper GCBA WiFi Publico (CABA)")
+    add_source_arguments(parser)
+    return parser.parse_args()
 
 
 async def main():
-    print("=== Scraper GCBA WiFi Publico ===")
+    args = parse_args()
+    print("=== Scraper GCBA WiFi Publico (CABA) ===")
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
@@ -83,7 +80,12 @@ async def main():
         for row in rows:
             lat = parse_float(row.get("lat"))
             lng = parse_float(row.get("long"))
-            if not is_palermo(row, lat, lng):
+            if not record_in_scope(lat=lat, lng=lng,
+                                   row_neighborhood=clean(row.get("barrio")),
+                                   row_commune=clean(row.get("comuna")),
+                                   scope=args.scope,
+                                   neighborhood=args.neighborhood,
+                                   commune=args.commune):
                 continue
                 
             nombre_raw = clean(row.get("nombre"))
@@ -115,10 +117,15 @@ async def main():
                 }
             })
             
-        print(f"  {len(candidates)} puntos WiFi encontrados en Palermo.")
-        
+        candidates = bounded(candidates, args.limit)
+        print(f"  {len(candidates)} puntos WiFi dentro de {args.scope}.")
+
         if not candidates:
             print("  Sin candidatos para insertar.")
+            return
+
+        if not args.write:
+            print("Validación completada; usar --write para persistir.")
             return
             
         # Ingesta en lote
@@ -154,6 +161,7 @@ async def main():
                 })
                 
         await bulk_upsert_properties(conn, prop_records, source_id)
+        await mark_source_synced(conn, source_id)
         print(f"  [OK] Ingesta WiFi Publico completada: {len(candidates)} puntos.")
         
     finally:

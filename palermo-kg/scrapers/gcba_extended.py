@@ -14,15 +14,19 @@ Datasets:
   - Wifi publico             -> Facility / wifi_publico
 """
 
+import argparse
 import asyncio
 import httpx
 from scrapers.shared.db_helpers import (
     bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments
+from scrapers.shared.geo_scope import record_in_scope
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
-PALERMO_BBOX = (-34.610, -34.558, -58.450, -58.395)
 
 DATASETS = [
     {
@@ -76,13 +80,6 @@ BOOLEAN_KEYS = {"is_free"}
 URL_KEYS = {"website"}
 
 
-def in_palermo(lat, lng) -> bool:
-    if lat is None or lng is None:
-        return False
-    south, north, west, east = PALERMO_BBOX
-    return south <= float(lat) <= north and west <= float(lng) <= east
-
-
 def get_val(props, keys):
     for k in keys:
         v = props.get(k)
@@ -109,7 +106,7 @@ def get_coords(feature):
     return None, None
 
 
-async def scrape_dataset(conn, source_id, dataset):
+async def scrape_dataset(conn, source_id, dataset, args):
     dname = dataset["name"]
     print(f"-> {dname}...")
 
@@ -170,7 +167,10 @@ async def scrape_dataset(conn, source_id, dataset):
         except (TypeError, ValueError):
             lat, lng = None, None
 
-        if not in_palermo(lat, lng):
+        row_neighborhood = get_val(props, dataset.get("props", {}).get("neighborhood", ["barrio", "bar"]))
+        row_commune = get_val(props, dataset.get("props", {}).get("commune", ["comuna", "com"]))
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=row_neighborhood, row_commune=row_commune,
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
 
         entity_records.append({
@@ -213,6 +213,9 @@ async def scrape_dataset(conn, source_id, dataset):
 
 
 async def main():
+    parser = argparse.ArgumentParser()
+    add_source_arguments(parser)
+    args = parser.parse_args()
     print("=== Scraper GCBA Extended ===")
     conn = await get_conn()
     try:
@@ -220,7 +223,10 @@ async def main():
         total = 0
         completed = True
         for dataset in DATASETS:
-            n = await scrape_dataset(conn, source_id, dataset)
+            if not args.write:
+                print("Validación completada; usar --write para persistir.")
+                return
+            n = await scrape_dataset(conn, source_id, dataset, args)
             if n is None:
                 completed = False
                 continue

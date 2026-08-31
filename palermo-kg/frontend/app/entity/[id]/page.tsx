@@ -312,7 +312,7 @@ export default function EntityPage() {
               </h2>
               {entity.entity_type === "HistoricalRecord" ? <p className="entity-warning">Registro histórico: no representa una actividad o estado actual.</p> : null}
               {payload.properties.some((property) => property.source_name === "sinca") ? <p className="entity-warning">Datos culturales SINCA: fuente histórica; confirmar vigencia antes de usarla como estado actual.</p> : null}
-              {payload.properties.some((property) => ["refes_historical", "transporte_rmba", "cep_xxi", "enacom_context"].includes(property.source_name ?? "")) ? <p className="entity-warning">Dato histórico o agregado: verificar período y cobertura geográfica antes de interpretarlo como estado actual de Palermo.</p> : null}
+              {payload.properties.some((property) => ["refes_historical", "transporte_rmba", "cep_xxi", "enacom_context"].includes(property.source_name ?? "")) ? <p className="entity-warning">Dato histórico o agregado: verificar período y cobertura geográfica antes de interpretarlo como estado actual de CABA.</p> : null}
               <div className="property-groups">
                 {categorizedProperties.map(([category, groups]) => (
                   <div key={category} className="property-category">

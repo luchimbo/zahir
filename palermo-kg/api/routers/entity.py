@@ -2,6 +2,7 @@ import json
 
 from fastapi import APIRouter, HTTPException, Query
 from api.db import get_pool
+from api.geography import geography_for_entities
 
 router = APIRouter(tags=["entity"])
 
@@ -56,9 +57,11 @@ async def retrieve_entity(entity_id: str, include_history: bool = False, source:
         legal_summary = await conn.fetch("""SELECT record_type, COUNT(*) AS total,
             MIN(observed_period) AS first_period, MAX(observed_period) AS last_period
             FROM legal_entity_records WHERE entity_id=$1 GROUP BY record_type ORDER BY record_type""", entity_id)
+        geography = await geography_for_entities(conn, [entity_id])
     return {"entity": decode_json(dict(entity)), "properties": [decode_json(dict(p)) for p in props],
             "relationships": [dict(r) for r in rels], "tags": [t["tag"] for t in tags],
-            "legal_records_summary": [dict(row) for row in legal_summary]}
+            "legal_records_summary": [dict(row) for row in legal_summary],
+            "geography": geography.get(entity_id, {"neighborhood": None, "commune": None})}
 
 
 @router.get("/entity/{entity_id}/legal-records")

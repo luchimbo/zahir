@@ -7,6 +7,7 @@ Datasets:
   - Colectivos paradas   -> Transport / parada_colectivo  (GeoJSON)
 """
 
+import argparse
 import asyncio
 import csv
 import io
@@ -15,20 +16,12 @@ from scrapers.shared.db_helpers import (
     get_conn, get_or_create_entity, upsert_property, get_source_id
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments
+from scrapers.shared.geo_scope import record_in_scope
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
-
-# Palermo bounding box para filtrar
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390
-
-
-def in_palermo(lat, lng):
-    try:
-        return LAT_MIN <= float(lat) <= LAT_MAX and LNG_MIN <= float(lng) <= LNG_MAX
-    except (TypeError, ValueError):
-        return False
-
 
 async def fetch_text(url):
     async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
@@ -50,14 +43,15 @@ def parse_csv(text):
     return list(reader)
 
 
-async def scrape_ecobici(conn, source_id):
+async def scrape_ecobici(conn, source_id, args):
     url = f"{CDN}/transporte-y-obras-publicas/estaciones-bicicletas-publicas/nuevas-estaciones-bicicletas-publicas.csv"
     print("-> ecobici...")
     rows = parse_csv(await fetch_text(url))
     count = 0
     for row in rows:
         lat, lng = row.get("latitud", ""), row.get("longitud", "")
-        if not in_palermo(lat, lng):
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=row.get("barrio"), row_commune=row.get("comuna"),
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
         nombre = normalize_name(row.get("nombre", ""))
         if not nombre:
@@ -75,18 +69,19 @@ async def scrape_ecobici(conn, source_id):
                 await upsert_property(conn, eid, k, normalize_value(v) if t == "string" else v,
                                       t, source_id, confidence=0.95)
         count += 1
-    print(f"  OK: {count} estaciones ecobici en Palermo")
+    print(f"  OK: {count} estaciones ecobici en {args.scope}")
     return count
 
 
-async def scrape_cajeros(conn, source_id):
+async def scrape_cajeros(conn, source_id, args):
     url = f"{CDN}/secretaria-de-desarrollo-urbano/cajeros-automaticos/cajeros-automaticos.csv"
     print("-> cajeros ATM...")
     rows = parse_csv(await fetch_text(url))
     count = 0
     for row in rows:
         lat, lng = row.get("lat", ""), row.get("long", "")
-        if not in_palermo(lat, lng):
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=row.get("barrio"), row_commune=row.get("comuna"),
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
         banco = normalize_name(row.get("banco", "ATM"))
         red = row.get("red", "")
@@ -107,16 +102,19 @@ async def scrape_cajeros(conn, source_id):
             if v:
                 await upsert_property(conn, eid, k, v, t, source_id, confidence=0.95)
         count += 1
-    print(f"  OK: {count} cajeros ATM en Palermo")
+    print(f"  OK: {count} cajeros ATM en {args.scope}")
     return count
 
 
-async def scrape_comisarias(conn, source_id):
+async def scrape_comisarias(conn, source_id, args):
     url = f"{CDN}/ministerio-de-justicia-y-seguridad/divisiones-comisarias-vecinales/divisiones-comisarias-vecinales.csv"
     print("-> comisarias...")
     rows = parse_csv(await fetch_text(url))
     count = 0
     for row in rows:
+        if not record_in_scope(row_neighborhood=row.get("barrio"), row_commune=row.get("comuna"),
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
+            continue
         nombre = normalize_name(row.get("nombre", ""))
         if not nombre:
             continue
@@ -135,7 +133,7 @@ async def scrape_comisarias(conn, source_id):
     return count
 
 
-async def scrape_colectivos(conn, source_id):
+async def scrape_colectivos(conn, source_id, args):
     url = f"{CDN}/transporte-y-obras-publicas/colectivos/paradas-de-colectivo.geojson"
     print("-> paradas colectivo...")
     data = await fetch_json(url)
@@ -151,7 +149,8 @@ async def scrape_colectivos(conn, source_id):
             lng, lat = float(coords[0]), float(coords[1])
         except (ValueError, TypeError):
             continue
-        if not in_palermo(lat, lng):
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=props.get("barrio"), row_commune=props.get("comuna"),
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
 
         stop_name = props.get("stop_name", "")
@@ -174,18 +173,24 @@ async def scrape_colectivos(conn, source_id):
         if count % 500 == 0:
             print(f"  {count} paradas...")
 
-    print(f"  OK: {count} paradas de colectivo en Palermo")
+    print(f"  OK: {count} paradas de colectivo en {args.scope}")
     return count
 
 
 async def main():
+    parser = argparse.ArgumentParser()
+    add_source_arguments(parser)
+    args = parser.parse_args()
     print("=== Scraper GCBA CSV ===")
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
         total = 0
+        if not args.write:
+            print("Validación completada; usar --write para persistir.")
+            return
         for fn in [scrape_ecobici, scrape_cajeros, scrape_comisarias, scrape_colectivos]:
-            total += await fn(conn, source_id)
+            total += await fn(conn, source_id, args)
             await asyncio.sleep(1)
         print(f"\nTotal: {total} entidades")
     finally:

@@ -16,6 +16,9 @@ if str(ROOT_DIR) not in sys.path:
 
 from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
 from scrapers.shared.normalizer import normalize_name
+from scrapers.shared.contract import add_source_arguments, bounded
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/agencia-gubernamental-de-control/fiscalizaciones/inspecciones_realizadas_2024.csv"
 
@@ -27,7 +30,7 @@ def norm(value: str) -> str:
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--write", action="store_true")
+    add_source_arguments(parser)
     args = parser.parse_args()
     conn = await get_conn()
     try:
@@ -41,7 +44,8 @@ async def main():
             response.raise_for_status()
         rows = csv.DictReader(io.StringIO(response.content.decode("utf-8-sig", "replace")), delimiter=";")
         matches = [row for row in rows if norm(row.get("EntidadInspeccionable")) in known]
-        print(f"Fiscalizaciones con dirección ya verificada en Palermo KG: {len(matches)}")
+        matches = bounded(matches, args.limit)
+        print(f"Fiscalizaciones con dirección ya verificada en el KG: {len(matches)} | scope={args.scope} | write={args.write}")
         if not args.write:
             return
         source_id = await get_source_id(conn, "ba_data")

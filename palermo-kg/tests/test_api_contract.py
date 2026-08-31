@@ -15,6 +15,14 @@ async def test_health(client):
     assert response.json() == {"status": "ok"}
 
 
+async def test_geographies_are_available(client):
+    response = await client.get("/api/geographies")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["communes"]) == 15
+    assert len(payload["neighborhoods"]) == 48
+
+
 async def test_search_devuelve_resultados_con_shape(client):
     response = await client.get("/api/search", params={"q": "Don Julio", "limit": 5})
     assert response.status_code == 200
@@ -44,7 +52,7 @@ async def test_retrieve_entity_shape(client):
     response = await client.get(f"/api/entity/{entity_id}")
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload.keys()) == {"entity", "properties", "relationships", "tags", "legal_records_summary"}
+    assert set(payload.keys()) == {"entity", "properties", "relationships", "tags", "legal_records_summary", "geography"}
     assert payload["entity"]["id"] == entity_id
     assert isinstance(payload["properties"], list)
     assert isinstance(payload["relationships"], list)

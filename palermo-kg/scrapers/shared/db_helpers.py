@@ -9,12 +9,21 @@ from api.db import _params, get_pool
 
 
 class ScraperConnection:
-    """Una única conexión persistente para cargas secuenciales de un scraper."""
+    """Una única conexión persistente para cargas secuenciales de un scraper.
+
+    Los scrapers largos (geocodificación fila por fila) pasan minutos entre
+    escrituras; TiDB corta conexiones inactivas antes de eso. ``ping`` revive
+    la conexión de forma transparente y el commit se hace en lotes chicos
+    para no perder trabajo si igual se corta a mitad de un lote.
+    """
+    COMMIT_EVERY = 20
+
     def __init__(self, config: dict):
         self.conn = pymysql.connect(**config)
         self.pending_writes = 0
 
     def _run(self, sql, args, one=False, value=False):
+        self.conn.ping(reconnect=True)
         with self.conn.cursor() as cursor:
             cursor.execute(_params(sql), args)
             if value:
@@ -25,7 +34,7 @@ class ScraperConnection:
             if cursor.description:
                 return cursor.fetchall()
             self.pending_writes += 1
-            if self.pending_writes >= 100:
+            if self.pending_writes >= self.COMMIT_EVERY:
                 self.conn.commit()
                 self.pending_writes = 0
             return cursor.rowcount
@@ -35,10 +44,11 @@ class ScraperConnection:
     async def fetchval(self, sql, *args): return await run_in_threadpool(self._run, sql, args, False, True)
     async def execute(self, sql, *args): return await run_in_threadpool(self._run, sql, args)
     def _executemany(self, sql, rows):
+        self.conn.ping(reconnect=True)
         with self.conn.cursor() as cursor:
             cursor.executemany(_params(sql), rows)
             self.pending_writes += len(rows)
-            if self.pending_writes >= 100:
+            if self.pending_writes >= self.COMMIT_EVERY:
                 self.conn.commit()
                 self.pending_writes = 0
             return cursor.rowcount
@@ -46,10 +56,23 @@ class ScraperConnection:
         if not rows:
             return 0
         return await run_in_threadpool(self._executemany, sql, rows)
-    async def close(self):
+    def _close(self):
         if self.pending_writes:
-            await run_in_threadpool(self.conn.commit)
-        await run_in_threadpool(self.conn.close)
+            self.conn.ping(reconnect=True)
+            self.conn.commit()
+        self.conn.close()
+    async def close(self):
+        await run_in_threadpool(self._close)
+
+    def _flush(self):
+        if self.pending_writes:
+            self.conn.ping(reconnect=True)
+            self.conn.commit()
+            self.pending_writes = 0
+
+    async def flush(self):
+        """Hace visibles registros de control antes de consultarlos de nuevo."""
+        await run_in_threadpool(self._flush)
 
 
 async def get_conn() -> ScraperConnection:
@@ -72,11 +95,21 @@ async def get_or_create_entity(conn, name: str, entity_type: str, subtype: str =
         )
         if external:
             return str(external["entity_id"])
+    # A name is not an identity in CABA: chains regularly have many branches.
+    # If no stable provider ID exists, only reuse a homonym when it is at the
+    # same point (or when neither record has coordinates).
+    coordinate_condition = "" if entity_type == "Location" else (
+        "AND ((lat IS NULL AND lng IS NULL) OR (ABS(lat-$4) < 0.00015 AND ABS(lng-$5) < 0.00015))"
+        if lat is not None else "AND lat IS NULL AND lng IS NULL"
+    )
+    identity_args = ((entity_type, name, name) if entity_type == "Location" else
+                     ((entity_type, name, name, lat, lng) if lat is not None else (entity_type, name, name)))
     row = await conn.fetchrow(
-        """SELECT id FROM entities WHERE is_active=TRUE AND canonical_id IS NULL
+        f"""SELECT id FROM entities WHERE is_active=TRUE AND canonical_id IS NULL
            AND entity_type=$1 AND (LOWER(name)=LOWER($2)
-           OR JSON_SEARCH(COALESCE(all_names, JSON_ARRAY()), 'one', $3) IS NOT NULL) LIMIT 1""",
-        entity_type, name, name,
+           OR JSON_SEARCH(COALESCE(all_names, JSON_ARRAY()), 'one', $3) IS NOT NULL)
+           {coordinate_condition} LIMIT 1""",
+        *identity_args,
     )
     if row:
         entity_id = str(row["id"])
@@ -147,9 +180,16 @@ async def get_source_id(conn, source_name: str) -> str:
 
 
 async def ensure_source(conn, source_name: str, source_url: str, tier: int = 1) -> str:
+    existing = await conn.fetchrow("SELECT id FROM sources WHERE source_name=$1", source_name)
+    if existing:
+        await conn.execute("UPDATE sources SET source_url=$1, tier=$2 WHERE id=$3", source_url, tier, existing["id"])
+        return str(existing["id"])
     await conn.execute(
         """INSERT INTO sources (id,source_name,source_url,tier) VALUES ($1,$2,$3,$4)
            ON DUPLICATE KEY UPDATE source_url=VALUES(source_url)""", str(uuid4()), source_name, source_url, tier)
+    # TiDB puede diferir la visibilidad de la inserción del registro de control
+    # hasta el commit; el catálogo necesita el id en la misma operación.
+    await conn.flush()
     return await get_source_id(conn, source_name)
 
 
@@ -159,7 +199,7 @@ async def register_source_policy(conn, source_id: str, *, data_class="current", 
         """INSERT INTO source_policies (source_id,data_class,refresh_schedule,access_mode,cost_policy,license_url,enabled)
            VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON DUPLICATE KEY UPDATE data_class=VALUES(data_class),refresh_schedule=VALUES(refresh_schedule),
-             access_mode=VALUES(access_mode),cost_policy=VALUES(cost_policy),license_url=VALUES(license_url),enabled=VALUES(enabled)""",
+             access_mode=VALUES(access_mode),cost_policy=VALUES(cost_policy),license_url=VALUES(license_url)""",
         source_id, data_class, refresh_schedule, access_mode, cost_policy, license_url, enabled,
     )
 
@@ -204,29 +244,76 @@ async def finish_sync_run(conn, run_id: str, status: str, records_seen: int = 0,
     )
 
 
+async def save_run_metrics(conn, run_id: str, *, coverage=None, error_code=None, checkpoint_after=None):
+    """Guarda métricas del adaptador, incluso para ejecuciones parciales."""
+    await conn.execute(
+        """INSERT INTO source_run_metrics (run_id,coverage,error_code,checkpoint_after)
+           VALUES ($1,$2,$3,$4)
+           ON DUPLICATE KEY UPDATE coverage=VALUES(coverage), error_code=VALUES(error_code),
+             checkpoint_after=VALUES(checkpoint_after)""",
+        run_id, json.dumps(coverage or {}), error_code, checkpoint_after,
+    )
+
+
+async def set_source_enabled(conn, source_id: str, enabled: bool):
+    await conn.execute("UPDATE source_policies SET enabled=$1 WHERE source_id=$2", enabled, source_id)
+
+
+async def upsert_relationship(conn, from_entity_id: str, relationship_type: str, to_entity_id: str,
+                              *, confidence: float = 0.95, origins: list | None = None,
+                              direction: str = "directed", weight: float = 1.0) -> None:
+    """Crea una arista una sola vez y actualiza su evidencia al reejecutar."""
+    if from_entity_id == to_entity_id:
+        return
+    await conn.execute(
+        """INSERT INTO relationships (id,from_entity_id,relationship_type,to_entity_id,weight,confidence,origins,direction)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON DUPLICATE KEY UPDATE confidence=GREATEST(confidence,VALUES(confidence)),
+             origins=VALUES(origins), weight=VALUES(weight), direction=VALUES(direction)""",
+        str(uuid4()), from_entity_id, relationship_type, to_entity_id, weight, confidence,
+        json.dumps(origins or []), direction,
+    )
+
+
 async def bulk_get_or_create_entities(conn, records: list[dict]) -> dict[str, str]:
     """Resuelve entidades por nombre en bloque; evita un round-trip por fila."""
     unique = {}
     for record in records:
         name = str(record["name"]).strip()
         if name:
-            unique.setdefault((record["entity_type"], name.lower()), {**record, "name": name})
+            # ``identity_key`` is supplied by high-volume sources when they
+            # have an address or provider record key. It prevents branches
+            # called alike from collapsing into a single entity.
+            identity_key = str(record.get("identity_key") or name.lower())
+            unique.setdefault((record["entity_type"], identity_key), {**record, "name": name})
     if not unique:
         return {}
 
     clauses, params = [], []
     by_type = {}
-    for entity_type, name_lower in unique:
-        by_type.setdefault(entity_type, []).append(name_lower)
-    for entity_type, names in by_type.items():
+    for entity_type, identity_key in unique:
+        by_type.setdefault(entity_type, []).append(identity_key)
+    # Fetch candidate homonyms; coordinates are checked below instead of
+    # treating their names as a globally unique key.
+    for entity_type, identities in by_type.items():
+        names = [unique[(entity_type, key)]["name"].lower() for key in identities]
         placeholders = ", ".join(f"${len(params) + index + 2}" for index in range(len(names)))
         clauses.append(f"(entity_type=${len(params) + 1} AND LOWER(name) IN ({placeholders}))")
         params.extend([entity_type, *names])
     existing_rows = await conn.fetch(
-        f"SELECT id, name, entity_type FROM entities WHERE is_active=TRUE AND canonical_id IS NULL AND ({' OR '.join(clauses)})",
+        f"SELECT id, name, entity_type, lat, lng FROM entities WHERE is_active=TRUE AND canonical_id IS NULL AND ({' OR '.join(clauses)})",
         *params,
     )
-    result = {(row["entity_type"], row["name"].lower()): str(row["id"]) for row in existing_rows}
+    result = {}
+    for key, record in unique.items():
+        for row in existing_rows:
+            if row["entity_type"] != record["entity_type"] or str(row["name"]).lower() != record["name"].lower():
+                continue
+            lat, lng = record.get("lat"), record.get("lng")
+            if lat is None and row["lat"] is None:
+                result[key] = str(row["id"]); break
+            if lat is not None and row["lat"] is not None and abs(float(row["lat"]) - float(lat)) < 0.00015 and abs(float(row["lng"]) - float(lng)) < 0.00015:
+                result[key] = str(row["id"]); break
     inserts = []
     for key, record in unique.items():
         if key in result:
@@ -245,7 +332,11 @@ async def bulk_get_or_create_entities(conn, records: list[dict]) -> dict[str, st
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
         inserts,
     )
-    return {record["name"]: result[(record["entity_type"], record["name"].lower())] for record in records}
+    resolved = {}
+    for record in records:
+        key = (record["entity_type"], str(record.get("identity_key") or record["name"].lower()))
+        resolved[str(record.get("record_key") or record["name"])] = result[key]
+    return resolved
 
 
 async def bulk_upsert_properties(conn, props: list[dict], source_id: str):

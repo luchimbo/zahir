@@ -29,12 +29,13 @@ from scrapers.shared.db_helpers import (
     mark_source_synced,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments
+from scrapers.shared.geo_scope import point_in_caba, record_in_scope
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 OBRAS_REGISTRADAS_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/obras-registradas/obrasregistradas-acumulado.csv"
 BA_OBRAS_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-legal-y-tecnica/ba-obras/dataset_ba_obras_actualizado.csv"
-
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390  # Bounding box de Palermo
 
 
 def clean(value) -> str:
@@ -57,12 +58,7 @@ def parse_float(value):
 
 
 def valid_lat_lng(lat, lng) -> bool:
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
-    )
+    return point_in_caba(lat, lng)
 
 
 def parse_wkt_point(wkt: str) -> tuple[float | None, float | None]:
@@ -79,7 +75,7 @@ def parse_wkt_point(wkt: str) -> tuple[float | None, float | None]:
 
 # ── Ingesta: Obras Registradas (Privadas) ────────────────────────────────────
 
-async def scrape_obras_privadas(conn, source_id: str, client: httpx.AsyncClient, limit: int = 1000) -> int:
+async def scrape_obras_privadas(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     print("-> Procesando Obras Registradas (Privadas)...")
     try:
         r = await client.get(OBRAS_REGISTRADAS_URL)
@@ -102,11 +98,10 @@ async def scrape_obras_privadas(conn, source_id: str, client: httpx.AsyncClient,
         if wkt:
             lat, lng = parse_wkt_point(wkt)
             
-        barrio = clean(row.get("barrio", "")).upper()
-        comuna = clean(row.get("comuna", "")).upper()
-        
-        is_p = "PALERMO" in barrio or "14" in comuna
-        if not is_p and not valid_lat_lng(lat, lng):
+        barrio = clean(row.get("barrio", ""))
+        comuna = clean(row.get("comuna", ""))
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=barrio, row_commune=comuna,
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
             
         expediente = clean(row.get("expediente"))
@@ -134,10 +129,10 @@ async def scrape_obras_privadas(conn, source_id: str, client: httpx.AsyncClient,
         })
         
     total_found = len(candidates)
-    print(f"  {total_found} obras privadas encontradas en Palermo.")
-    if limit and total_found > limit:
-        print(f"  Limitando carga a {limit} obras privadas.")
-        candidates = candidates[:limit]
+    print(f"  {total_found} obras privadas encontradas en {args.scope}.")
+    if args.limit and total_found > args.limit:
+        print(f"  Limitando carga a {args.limit} obras privadas.")
+        candidates = candidates[:args.limit]
 
     if not candidates:
         return 0
@@ -184,7 +179,7 @@ async def scrape_obras_privadas(conn, source_id: str, client: httpx.AsyncClient,
 
 # ── Ingesta: BA Obras (Públicas) ─────────────────────────────────────────────
 
-async def scrape_obras_publicas(conn, source_id: str, client: httpx.AsyncClient, limit: int = 1000) -> int:
+async def scrape_obras_publicas(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     print("-> Procesando BA Obras (Públicas)...")
     try:
         r = await client.get(BA_OBRAS_URL)
@@ -205,13 +200,7 @@ async def scrape_obras_publicas(conn, source_id: str, client: httpx.AsyncClient,
         obra_nombre = clean(row.get("\ufeffOBRA_NOMBRE") or row.get("OBRA_NOMBRE"))
         calle = clean(row.get("CALLE"))
         
-        # Filtro de pertenencia a Palermo
-        is_p = (
-            valid_lat_lng(lat, lng)
-            or "PALERMO" in obra_nombre.upper()
-            or "PALERMO" in calle.upper()
-        )
-        if not is_p:
+        if not record_in_scope(lat=lat, lng=lng, scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
             
         if not obra_nombre:
@@ -245,10 +234,10 @@ async def scrape_obras_publicas(conn, source_id: str, client: httpx.AsyncClient,
         })
         
     total_found = len(candidates)
-    print(f"  {total_found} obras públicas encontradas en Palermo.")
-    if limit and total_found > limit:
-        print(f"  Limitando carga a {limit} obras públicas.")
-        candidates = candidates[:limit]
+    print(f"  {total_found} obras públicas encontradas en {args.scope}.")
+    if args.limit and total_found > args.limit:
+        print(f"  Limitando carga a {args.limit} obras públicas.")
+        candidates = candidates[:args.limit]
 
     if not candidates:
         return 0
@@ -296,21 +285,22 @@ async def scrape_obras_publicas(conn, source_id: str, client: httpx.AsyncClient,
 # ── Main Execution ──────────────────────────────────────────────────────────
 
 async def main():
-    import argparse
     parser = argparse.ArgumentParser(description="Scraper GCBA Obras")
-    parser.add_argument("--limit", type=int, default=1000,
-                        help="Límite de registros a cargar por cada dataset (default: 1000)")
+    add_source_arguments(parser)
     args = parser.parse_args()
 
     print("=== Scraper GCBA Obras ===")
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
+        if not args.write:
+            print("Validación completada; usar --write para persistir.")
+            return
         
         async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
-            total_priv = await scrape_obras_privadas(conn, source_id, client, limit=args.limit)
+            total_priv = await scrape_obras_privadas(conn, source_id, client, args)
             await asyncio.sleep(1)
-            total_pub = await scrape_obras_publicas(conn, source_id, client, limit=args.limit)
+            total_pub = await scrape_obras_publicas(conn, source_id, client, args)
         await mark_source_synced(conn, source_id)
             
         print(f"\n[OK] Scraper Obras finalizado con éxito. Total: {total_priv + total_pub} obras.")

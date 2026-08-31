@@ -13,6 +13,7 @@ Datasets:
 No toca datos inmobiliarios.
 """
 
+import argparse
 import asyncio
 import csv
 import io
@@ -27,11 +28,12 @@ from scrapers.shared.db_helpers import (
     upsert_property,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments
+from scrapers.shared.geo_scope import point_in_caba, record_in_scope
+
+SUPPORTS_SOURCE_CONTRACT = True
 
 CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
-
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390
 
 DATASETS = {
     "ecobici": {
@@ -79,32 +81,7 @@ def parse_float(value):
 
 
 def valid_lat_lng(lat, lng) -> bool:
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
-    )
-
-
-def is_palermo_barrio(value: str) -> bool:
-    barrio = (
-        clean(value)
-        .upper()
-        .replace("Á", "A")
-        .replace("É", "E")
-        .replace("Í", "I")
-        .replace("Ó", "O")
-        .replace("Ú", "U")
-    )
-    return "PALERMO" in barrio
-
-
-def is_palermo_with_barrio_fallback(barrio_value: str, lat=None, lng=None) -> bool:
-    barrio = clean(barrio_value)
-    if barrio:
-        return is_palermo_barrio(barrio)
-    return valid_lat_lng(lat, lng)
+    return point_in_caba(lat, lng)
 
 
 def point_from_geometry(feature: dict):
@@ -131,7 +108,7 @@ def iter_line_points(coords):
             yield from iter_line_points(item)
 
 
-def first_palermo_point(feature: dict):
+def first_caba_point(feature: dict):
     geometry = feature.get("geometry") or {}
     if geometry.get("type") not in {"LineString", "MultiLineString"}:
         return None, None
@@ -175,7 +152,7 @@ async def set_props(conn, entity_id: str, source_id: str, origins: list[str], pr
         )
 
 
-async def scrape_ecobici(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def scrape_ecobici(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     dataset = DATASETS["ecobici"]
     rows = await fetch_csv(client, dataset["url"])
     count = 0
@@ -183,7 +160,8 @@ async def scrape_ecobici(conn, source_id: str, client: httpx.AsyncClient) -> int
     for row in rows:
         lat = parse_float(row.get("latitud"))
         lng = parse_float(row.get("longitud"))
-        if not is_palermo_with_barrio_fallback(row.get("barrio", ""), lat, lng):
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=row.get("barrio"), row_commune=row.get("comuna"),
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
         name = normalize_name(row.get("nombre", ""))
         if not name:
@@ -210,7 +188,7 @@ async def scrape_ecobici(conn, source_id: str, client: httpx.AsyncClient) -> int
     return count
 
 
-async def scrape_subte_estaciones(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def scrape_subte_estaciones(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     dataset = DATASETS["subte_estaciones"]
     features = await fetch_features(client, dataset["url"])
     count = 0
@@ -218,7 +196,7 @@ async def scrape_subte_estaciones(conn, source_id: str, client: httpx.AsyncClien
     for feature in features:
         props = feature.get("properties") or {}
         lat, lng = point_from_geometry(feature)
-        if not valid_lat_lng(lat, lng):
+        if not record_in_scope(lat=lat, lng=lng, scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
         station = normalize_name(props.get("estacion", ""))
         line = clean(props.get("linea"))
@@ -239,23 +217,24 @@ async def scrape_subte_estaciones(conn, source_id: str, client: httpx.AsyncClien
             ("line", line, "string"),
         ])
         count += 1
-    print(f"  OK: {count} estaciones de subte en Palermo")
+    print(f"  OK: {count} estaciones de subte en {args.scope}")
     return count
 
 
-async def scrape_bocas_subte(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def scrape_bocas_subte(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     dataset = DATASETS["bocas_subte"]
     features = await fetch_features(client, dataset["url"])
     candidates = []
     for feature in features:
         props = feature.get("properties") or {}
         lat, lng = point_from_geometry(feature)
-        if is_palermo_with_barrio_fallback(props.get("barrio", ""), lat, lng):
+        if record_in_scope(lat=lat, lng=lng, row_neighborhood=props.get("barrio"), row_commune=props.get("comuna"),
+                           scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             candidates.append((feature, lat, lng))
 
     count = 0
     print(f"-> bocas_subte... {len(features)} features")
-    print(f"  {len(candidates)} candidatas Palermo")
+    print(f"  {len(candidates)} candidatas {args.scope}")
     if OFFSET:
         candidates = candidates[OFFSET:]
         print(f"  retomando desde {OFFSET}")
@@ -305,19 +284,20 @@ def collect_bus_lines(props: dict) -> list[str]:
     return lines
 
 
-async def scrape_colectivos_paradas(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def scrape_colectivos_paradas(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     dataset = DATASETS["colectivos_paradas"]
     features = await fetch_features(client, dataset["url"])
     candidates = []
     for feature in features:
         props = feature.get("properties") or {}
         lat, lng = point_from_geometry(feature)
-        if is_palermo_with_barrio_fallback(props.get("BARRIO", ""), lat, lng):
+        if record_in_scope(lat=lat, lng=lng, row_neighborhood=props.get("BARRIO"), row_commune=props.get("COMUNA"),
+                           scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             candidates.append((feature, lat, lng))
 
     count = 0
     print(f"-> colectivos_paradas... {len(features)} features")
-    print(f"  {len(candidates)} candidatas Palermo")
+    print(f"  {len(candidates)} candidatas {args.scope}")
     if OFFSET:
         candidates = candidates[OFFSET:]
         print(f"  retomando desde {OFFSET}")
@@ -353,18 +333,18 @@ async def scrape_colectivos_paradas(conn, source_id: str, client: httpx.AsyncCli
     return count
 
 
-async def scrape_colectivos_recorridos(conn, source_id: str, client: httpx.AsyncClient) -> int:
+async def scrape_colectivos_recorridos(conn, source_id: str, client: httpx.AsyncClient, args) -> int:
     dataset = DATASETS["colectivos_recorridos"]
     features = await fetch_features(client, dataset["url"])
     candidates = []
     for feature in features:
-        lat, lng = first_palermo_point(feature)
-        if valid_lat_lng(lat, lng):
+        lat, lng = first_caba_point(feature)
+        if record_in_scope(lat=lat, lng=lng, scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             candidates.append((feature, lat, lng))
 
     count = 0
     print(f"-> colectivos_recorridos... {len(features)} features")
-    print(f"  {len(candidates)} recorridos pasan por Palermo")
+    print(f"  {len(candidates)} recorridos que atraviesan {args.scope}")
     if OFFSET:
         candidates = candidates[OFFSET:]
         print(f"  retomando desde {OFFSET}")
@@ -413,17 +393,25 @@ SCRAPERS = {
 async def main():
     global OFFSET
     print("=== Scraper GCBA Movilidad ===")
-    selected = {arg for arg in sys.argv[1:] if not arg.isdigit()}
-    OFFSET = next((int(arg) for arg in sys.argv[1:] if arg.isdigit()), 0)
+    parser = argparse.ArgumentParser()
+    add_source_arguments(parser)
+    parser.add_argument("--dataset", action="append", choices=SCRAPERS.keys())
+    parser.add_argument("--offset", type=int, default=0)
+    args = parser.parse_args()
+    selected = set(args.dataset or [])
+    OFFSET = args.offset
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
+        if not args.write:
+            print("Validación completada; usar --write para persistir.")
+            return
         total = 0
         async with httpx.AsyncClient(follow_redirects=True, timeout=90) as client:
             for name, scraper in SCRAPERS.items():
                 if selected and name not in selected:
                     continue
-                total += await scraper(conn, source_id, client)
+                total += await scraper(conn, source_id, client, args)
                 await asyncio.sleep(0.5)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")
     finally:

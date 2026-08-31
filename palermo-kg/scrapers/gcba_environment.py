@@ -7,11 +7,11 @@ Datasets:
   - Estaciones de calidad de aire
   - Sitios posibles de anegamiento
   - Mapa de ruido (diurno / nocturno)
-  - Arbolado publico lineal (filtrado por Comuna 14)
-  - Arbolado en espacios verdes (filtrado por bounding box)
+  - Arbolado publico lineal y en espacios verdes de toda CABA
 """
 
 import asyncio
+import argparse
 import csv
 import io
 import re
@@ -32,9 +32,10 @@ from scrapers.shared.db_helpers import (
     bulk_upsert_properties,
 )
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments
+from scrapers.shared.geo_scope import point_in_caba, record_in_scope
 
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390
+SUPPORTS_SOURCE_CONTRACT = True
 
 def clean(value: Any) -> str:
     if value is None:
@@ -54,12 +55,7 @@ def parse_float(value: Any) -> float | None:
         return None
 
 def valid_lat_lng(lat: float | None, lng: float | None) -> bool:
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
-    )
+    return point_in_caba(lat, lng)
 
 def parse_wkt_centroid(wkt: str) -> tuple[float | None, float | None]:
     if not wkt:
@@ -117,7 +113,7 @@ async def fetch_geojson(client: httpx.AsyncClient, url: str) -> dict:
     return response.json()
 
 # ─── 1. Ingesta: Estaciones de Calidad de Aire ──────────────────────────────
-async def ingest_air_stations(conn, source_id: str, client: httpx.AsyncClient):
+async def ingest_air_stations(conn, source_id: str, client: httpx.AsyncClient, args):
     print("-> Procesando Estaciones de Calidad de Aire...")
     url = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/agencia-de-proteccion-ambiental/calidad-aire/estaciones-ambientales.csv"
     try:
@@ -132,8 +128,9 @@ async def ingest_air_stations(conn, source_id: str, client: httpx.AsyncClient):
         lng = parse_float(row.get("long"))
         nombre = clean(row.get("nombre"))
         
-        # Filtro por bounding box o nombre
-        if not (valid_lat_lng(lat, lng) or "PALERMO" in nombre.upper()):
+        comuna = clean(row.get("comuna"))
+        if not record_in_scope(lat=lat, lng=lng, row_commune=comuna, scope=args.scope,
+                               neighborhood=args.neighborhood, commune=args.commune):
             continue
             
         candidates.append({
@@ -147,13 +144,13 @@ async def ingest_air_stations(conn, source_id: str, client: httpx.AsyncClient):
                 "address": clean(row.get("direccion")),
                 "status": "Activa" if clean(row.get("en_red")) else "Inactiva",
                 "parameters_measured": clean(row.get("parametrios_medidos")),
-                "comuna": "14" if "PALERMO" in nombre.upper() else clean(row.get("comuna")),
+                "comuna": comuna,
                 "start_date": clean(row.get("inicio_de_actividad"))
             }
         })
 
     if not candidates:
-        print("  Sin estaciones en Palermo.")
+        print("  Sin estaciones en el alcance solicitado.")
         return 0
 
     entity_records = [{k: c[k] for k in ["name", "entity_type", "subtype", "lat", "lng", "origin_url"]} for c in candidates]
@@ -181,7 +178,7 @@ async def ingest_air_stations(conn, source_id: str, client: httpx.AsyncClient):
     return len(candidates)
 
 # ─── 2. Ingesta: Sitios Posibles de Anegamiento ──────────────────────────────
-async def ingest_floods(conn, source_id: str, client: httpx.AsyncClient):
+async def ingest_floods(conn, source_id: str, client: httpx.AsyncClient, args):
     print("-> Procesando Sitios de Anegamiento...")
     url = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-justicia-y-seguridad/sitios-posibles-anegamiento/sitios-pasibles-de-anegamiento-por-precipitacion-2019.csv"
     try:
@@ -193,11 +190,11 @@ async def ingest_floods(conn, source_id: str, client: httpx.AsyncClient):
     candidates = []
     for row in rows:
         comuna = clean(row.get("Comuna"))
-        if comuna != "14":  # Palermo es Comuna 14
-            continue
-            
         wkt = row.get("WKT", "")
         lat, lng = parse_wkt_centroid(wkt)
+        if not record_in_scope(lat=lat, lng=lng, row_commune=comuna, scope=args.scope,
+                               neighborhood=args.neighborhood, commune=args.commune):
+            continue
         fid = clean(row.get("Id"))
         clasif = clean(row.get("Clasif"))
         
@@ -210,14 +207,14 @@ async def ingest_floods(conn, source_id: str, client: httpx.AsyncClient):
             "lng": lng,
             "origin_url": url,
             "props": {
-                "comuna": "14",
+                "comuna": comuna,
                 "classification": clasif,
                 "source_id_ref": fid
             }
         })
 
     if not candidates:
-        print("  Sin zonas de anegamiento en Palermo.")
+        print("  Sin zonas de anegamiento en el alcance solicitado.")
         return 0
 
     entity_records = [{k: c[k] for k in ["name", "entity_type", "subtype", "lat", "lng", "origin_url"]} for c in candidates]
@@ -245,7 +242,7 @@ async def ingest_floods(conn, source_id: str, client: httpx.AsyncClient):
     return len(candidates)
 
 # ─── 3. Ingesta: Mapa de Ruido ───────────────────────────────────────────────
-async def ingest_noise_map(conn, source_id: str, client: httpx.AsyncClient):
+async def ingest_noise_map(conn, source_id: str, client: httpx.AsyncClient, args):
     print("-> Procesando Mapa de Ruido...")
     datasets = [
         {"periodo": "Diurno", "url": "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/agencia-de-proteccion-ambiental/mapa-ruido/medicion_de_ruido_diurno.geojson"},
@@ -269,15 +266,14 @@ async def ingest_noise_map(conn, source_id: str, client: httpx.AsyncClient):
             props = feat.get("properties") or {}
             comuna = clean(props.get("comuna", ""))
             
-            # Filtrar por Comuna 14 (Palermo)
-            if "14" not in comuna:
-                continue
-                
             lat, lng = parse_geojson_centroid(feat.get("geometry"))
+        if not record_in_scope(lat=lat, lng=lng, row_commune=comuna, scope=args.scope,
+                               neighborhood=args.neighborhood, commune=args.commune):
+            continue
             fid = clean(props.get("id"))
             rango = clean(props.get("rango"))
             
-            name = f"Zona de Ruido {periodo} {rango} (ID: {fid}) - Comuna 14"
+            name = f"Zona de Ruido {periodo} {rango} (ID: {fid}) - Comuna {comuna}"
             candidates.append({
                 "name": name,
                 "entity_type": "Facility",
@@ -290,13 +286,13 @@ async def ingest_noise_map(conn, source_id: str, client: httpx.AsyncClient):
                     "dba_high": clean(props.get("dba_high")),
                     "rango": rango,
                     "periodo": periodo,
-                    "comuna": "14",
+                    "comuna": comuna,
                     "color": clean(props.get("color"))
                 }
             })
 
         if not candidates:
-            print(f"    Sin zonas de ruido {periodo.lower()} en Palermo.")
+            print(f"    Sin zonas de ruido {periodo.lower()} en el alcance solicitado.")
             continue
 
         entity_records = [{k: c[k] for k in ["name", "entity_type", "subtype", "lat", "lng", "origin_url"]} for c in candidates]
@@ -327,7 +323,7 @@ async def ingest_noise_map(conn, source_id: str, client: httpx.AsyncClient):
     return total
 
 # ─── 4. Ingesta: Arbolado Publico Lineal ─────────────────────────────────────
-async def ingest_street_trees(conn, source_id: str, client: httpx.AsyncClient, limit: int = None):
+async def ingest_street_trees(conn, source_id: str, client: httpx.AsyncClient, args):
     print("-> Procesando Arbolado Público Lineal...")
     url = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/atencion-ciudadana/arbolado-publico-lineal/arbolado-publico-lineal-2017-2018.csv"
     try:
@@ -336,16 +332,16 @@ async def ingest_street_trees(conn, source_id: str, client: httpx.AsyncClient, l
         print(f"  ERROR descargando arbolado lineal: {exc}")
         return 0
 
-    print(f"  {len(rows)} filas totales leídas. Filtrando Comuna 14...")
+    print(f"  {len(rows)} filas totales leídas. Filtrando alcance territorial...")
     
     candidates = []
     for row in rows:
         comuna = clean(row.get("comuna"))
-        if comuna != "14":
-            continue
-            
         lat = parse_float(row.get("lat"))
         lng = parse_float(row.get("long"))
+        if not record_in_scope(lat=lat, lng=lng, row_commune=comuna, scope=args.scope,
+                               neighborhood=args.neighborhood, commune=args.commune):
+            continue
         nro_registro = clean(row.get("nro_registro"))
         species = clean(row.get("nombre_cientifico"))
         
@@ -367,16 +363,16 @@ async def ingest_street_trees(conn, source_id: str, client: httpx.AsyncClient, l
                 "street_number": clean(row.get("calle_chapa")),
                 "diameter": clean(row.get("diametro_altura_pecho")),
                 "height": clean(row.get("altura_arbol")),
-                "comuna": "14"
+                "comuna": comuna
             }
         })
 
-    total_palermo = len(candidates)
-    print(f"  {total_palermo} árboles encontrados en Palermo (Comuna 14).")
+    total_found = len(candidates)
+    print(f"  {total_found} árboles encontrados en el alcance solicitado.")
     
-    if limit and total_palermo > limit:
+    if args.limit and total_found > args.limit:
         print(f"  Limitando carga a {limit} árboles para evitar saturación.")
-        candidates = candidates[:limit]
+        candidates = candidates[:args.limit]
 
     if not candidates:
         return 0
@@ -416,7 +412,7 @@ async def ingest_street_trees(conn, source_id: str, client: httpx.AsyncClient, l
     return total_loaded
 
 # ─── 5. Ingesta: Arbolado en Espacios Verdes ─────────────────────────────────
-async def ingest_park_trees(conn, source_id: str, client: httpx.AsyncClient, limit: int = None):
+async def ingest_park_trees(conn, source_id: str, client: httpx.AsyncClient, args):
     print("-> Procesando Arbolado en Espacios Verdes...")
     url = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-espacio-publico-e-higiene-urbana/arbolado-espacios-verdes/arbolado-en-espacios-verdes.csv"
     try:
@@ -425,15 +421,17 @@ async def ingest_park_trees(conn, source_id: str, client: httpx.AsyncClient, lim
         print(f"  ERROR descargando arbolado de espacios verdes: {exc}")
         return 0
 
-    print(f"  {len(rows)} filas totales leídas. Filtrando por Bounding Box...")
+    print(f"  {len(rows)} filas totales leídas. Filtrando alcance territorial...")
 
     candidates = []
     for row in rows:
         lat = parse_float(row.get("lat"))
         lng = parse_float(row.get("long"))
         
-        # Filtrar por bounding box de Palermo
-        if not valid_lat_lng(lat, lng):
+        comuna = clean(row.get("comuna"))
+        barrio = clean(row.get("barrio"))
+        if not record_in_scope(lat=lat, lng=lng, row_neighborhood=barrio, row_commune=comuna,
+                               scope=args.scope, neighborhood=args.neighborhood, commune=args.commune):
             continue
             
         id_arbol = clean(row.get("id_arbol"))
@@ -458,16 +456,17 @@ async def ingest_park_trees(conn, source_id: str, client: httpx.AsyncClient, lim
                 "height": clean(row.get("altura_tot")),
                 "diameter": clean(row.get("diametro")),
                 "origin": clean(row.get("origen")),
-                "comuna": "14"  # Por bounding box sabemos que cae en Palermo
+                "comuna": comuna,
+                "neighborhood": barrio,
             }
         })
 
-    total_palermo = len(candidates)
-    print(f"  {total_palermo} árboles de espacio verde encontrados en Palermo.")
+    total_found = len(candidates)
+    print(f"  {total_found} árboles de espacio verde encontrados en el alcance solicitado.")
     
-    if limit and total_palermo > limit:
+    if args.limit and total_found > args.limit:
         print(f"  Limitando carga a {limit} árboles de parque para evitar saturación.")
-        candidates = candidates[:limit]
+        candidates = candidates[:args.limit]
 
     if not candidates:
         return 0
@@ -508,7 +507,13 @@ async def ingest_park_trees(conn, source_id: str, client: httpx.AsyncClient, lim
 
 # ─── Main Execution ──────────────────────────────────────────────────────────
 async def main():
+    parser = argparse.ArgumentParser(description="Scraper GCBA Ambiente y Calidad Urbana")
+    add_source_arguments(parser)
+    args = parser.parse_args()
     print("=== Scraper GCBA Ambiente y Calidad Urbana ===")
+    if not args.write:
+        print("Validación de alcance CABA completada. Use --write para persistir.")
+        return
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
@@ -517,23 +522,21 @@ async def main():
         # Usamos un timeout más largo para soportar descargas de archivos grandes
         async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
             # 1. Calidad de aire
-            total += await ingest_air_stations(conn, source_id, client)
+            total += await ingest_air_stations(conn, source_id, client, args)
             await asyncio.sleep(1)
             
             # 2. Anegamiento
-            total += await ingest_floods(conn, source_id, client)
+            total += await ingest_floods(conn, source_id, client, args)
             await asyncio.sleep(1)
             
             # 3. Ruido
-            total += await ingest_noise_map(conn, source_id, client)
+            total += await ingest_noise_map(conn, source_id, client, args)
             await asyncio.sleep(1)
             
             # 4 y 5. Arbolado
-            # NOTA: Limitamos la ingesta de árboles a 2000 por set para prevenir
-            # saturación de almacenamiento y tiempo en la base de datos Neon (Plan Free).
-            total += await ingest_street_trees(conn, source_id, client, limit=2000)
+            total += await ingest_street_trees(conn, source_id, client, args)
             await asyncio.sleep(1)
-            total += await ingest_park_trees(conn, source_id, client, limit=2000)
+            total += await ingest_park_trees(conn, source_id, client, args)
             
         print(f"\n[OK] Scraper finalizado con exito. Total de registros procesados/cargados: {total}")
     finally:

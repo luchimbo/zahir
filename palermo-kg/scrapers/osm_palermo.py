@@ -3,27 +3,33 @@ Scraper: OpenStreetMap — Overpass API
 Fuente: https://overpass-api.de
 Tier 1 — libre, sin autenticacion.
 
-Extrae POIs de Palermo BA en 5 queries separadas para evitar timeout.
+Extrae POIs de CABA (o Palermo) en 5 queries separadas para evitar timeout.
 """
 
+import argparse
 import asyncio
 import urllib.parse
+
 import httpx
+
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import (
     get_conn, get_or_create_entity, upsert_property, get_source_id, mark_source_synced
 )
+from scrapers.shared.geo_scope import CABA_BBOX, PALERMO_BBOX, record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
+SUPPORTS_SOURCE_CONTRACT = True
+
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-PALERMO_BBOX = "-34.610,-58.450,-34.558,-58.395"
 UA = "PalermoKGBot/1.0 (luciotambo@gmail.com)"
 
-OVERPASS_QUERIES = [
-    f'[out:json][timeout:30];node["amenity"~"restaurant|bar|cafe|pharmacy|hospital|clinic|school|university|bank|atm|museum|theatre|cinema|gym|veterinary|beauty|nightclub|pub|fast_food|library|police|post_office|spa"]({PALERMO_BBOX});out body;',
-    f'[out:json][timeout:30];node["tourism"~"hotel|hostel|guest_house|museum|attraction|gallery|artwork"]({PALERMO_BBOX});out body;',
-    f'[out:json][timeout:30];node["shop"~"supermarket|bakery|butcher|clothes|hairdresser|laundry|optician|bookshop|pet|hardware|florist"]({PALERMO_BBOX});out body;',
-    f'[out:json][timeout:30];node["leisure"~"fitness_centre|sports_centre|swimming_pool|park|playground|pitch"]({PALERMO_BBOX});out body;',
-    f'[out:json][timeout:30];node["healthcare"~"doctor|dentist|physiotherapist|psychologist"]({PALERMO_BBOX});out body;',
+QUERY_FILTERS = [
+    'node["amenity"~"restaurant|bar|cafe|pharmacy|hospital|clinic|school|university|bank|atm|museum|theatre|cinema|gym|veterinary|beauty|nightclub|pub|fast_food|library|police|post_office|spa"]',
+    'node["tourism"~"hotel|hostel|guest_house|museum|attraction|gallery|artwork"]',
+    'node["shop"~"supermarket|bakery|butcher|clothes|hairdresser|laundry|optician|bookshop|pet|hardware|florist"]',
+    'node["leisure"~"fitness_centre|sports_centre|swimming_pool|park|playground|pitch"]',
+    'node["healthcare"~"doctor|dentist|physiotherapist|psychologist"]',
 ]
 
 AMENITY_MAP = {
@@ -64,6 +70,22 @@ HEALTHCARE_MAP = {
     "physiotherapist": ("Facility", "kinesiologia"), "psychologist": ("Facility", "consultorio_psicologia"),
 }
 
+PROP_KEYS = [
+    ("osm_id", lambda el: str(el["id"]), "string"),
+    ("address", lambda t: t.get("addr:street", ""), "string"),
+    ("phone", lambda t: t.get("phone") or t.get("contact:phone", ""), "string"),
+    ("website", lambda t: t.get("website") or t.get("contact:website", ""), "url"),
+    ("hours_open", lambda t: t.get("opening_hours", ""), "string"),
+    ("cuisine_type", lambda t: t.get("cuisine", ""), "string"),
+    ("instagram", lambda t: t.get("contact:instagram", ""), "string"),
+]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    add_source_arguments(parser)
+    return parser.parse_args()
+
 
 def resolve_type(tags):
     for tag_key, mapping in [
@@ -74,6 +96,13 @@ def resolve_type(tags):
         if val and val in mapping:
             return mapping[val]
     return None
+
+
+def build_queries(bbox: str):
+    return [
+        f'[out:json][timeout:30];{f}({bbox});out body;'
+        for f in QUERY_FILTERS
+    ]
 
 
 async def post_query(client, query):
@@ -87,11 +116,11 @@ async def post_query(client, query):
     return r.json().get("elements", [])
 
 
-async def scrape(conn, source_id):
+async def fetch_elements(queries):
     all_elements = []
     async with httpx.AsyncClient(timeout=60) as client:
-        for i, query in enumerate(OVERPASS_QUERIES):
-            print(f"-> Overpass query {i+1}/{len(OVERPASS_QUERIES)}...")
+        for i, query in enumerate(queries):
+            print(f"-> Overpass query {i + 1}/{len(queries)}...")
             try:
                 elements = await post_query(client, query)
                 all_elements.extend(elements)
@@ -100,59 +129,87 @@ async def scrape(conn, source_id):
             except Exception as e:
                 print(f"  ERROR: {e}")
                 await asyncio.sleep(10)
+    return all_elements
 
-    print(f"  Total OSM: {len(all_elements)} nodos")
 
-    count = skipped = 0
-    for el in all_elements:
-        tags = el.get("tags", {})
-        name = tags.get("name") or tags.get("name:es")
-        if not name:
-            skipped += 1
-            continue
+def to_candidate(el, scope, neighborhood, commune):
+    tags = el.get("tags", {})
+    name = tags.get("name") or tags.get("name:es")
+    if not name:
+        return None
+    resolved = resolve_type(tags)
+    if not resolved:
+        return None
+    lat, lng = el.get("lat"), el.get("lon")
+    if lat is None or lng is None:
+        return None
+    if not record_in_scope(lat=lat, lng=lng, scope=scope,
+                            neighborhood=neighborhood, commune=commune):
+        return None
+    props = []
+    for key, getter, _vtype in PROP_KEYS:
+        val = getter(el) if key == "osm_id" else getter(tags)
+        if val:
+            props.append((key, normalize_value(val) if _vtype == "string" else val))
+    return {
+        "name": normalize_name(name),
+        "entity_type": resolved[0],
+        "subtype": resolved[1],
+        "lat": lat,
+        "lng": lng,
+        "origin_url": f"https://www.openstreetmap.org/node/{el['id']}",
+        "props": props,
+    }
 
-        name = normalize_name(name)
-        resolved = resolve_type(tags)
-        if not resolved:
-            skipped += 1
-            continue
 
-        entity_type, subtype = resolved
-        entity_id = await get_or_create_entity(
-            conn, name=name, entity_type=entity_type, subtype=subtype,
-            lat=el.get("lat"), lng=el.get("lon"),
-            origin_url=f"https://www.openstreetmap.org/node/{el['id']}",
-            source_id=source_id, external_id=f"node/{el['id']}",
-        )
-
-        for key, value, vtype in [
-            ("osm_id", str(el["id"]), "string"),
-            ("address", tags.get("addr:street", ""), "string"),
-            ("phone", tags.get("phone") or tags.get("contact:phone", ""), "string"),
-            ("website", tags.get("website") or tags.get("contact:website", ""), "url"),
-            ("hours_open", tags.get("opening_hours", ""), "string"),
-            ("cuisine_type", tags.get("cuisine", ""), "string"),
-            ("instagram", tags.get("contact:instagram", ""), "string"),
-        ]:
-            if value:
-                await upsert_property(conn, entity_id, key,
-                                      normalize_value(value) if vtype == "string" else value,
-                                      vtype, source_id, confidence=0.5)
-        count += 1
-        if count % 100 == 0:
-            print(f"  {count} entidades procesadas...")
-
-    print(f"  OK OSM: {count} entidades insertadas/actualizadas, {skipped} saltadas")
+async def write_candidates(candidates, source_name="osm"):
+    conn = await get_conn()
+    try:
+        source_id = await get_source_id(conn, source_name)
+        count = 0
+        for c in candidates:
+            entity_id = await get_or_create_entity(
+                conn, name=c["name"], entity_type=c["entity_type"], subtype=c["subtype"],
+                lat=c["lat"], lng=c["lng"], origin_url=c["origin_url"],
+                source_id=source_id,
+            )
+            for key, value in c["props"]:
+                await upsert_property(conn, entity_id, key, value,
+                                     "string" if isinstance(value, str) else "url",
+                                     source_id, confidence=0.5)
+            count += 1
+            if count % 100 == 0:
+                print(f"  {count} entidades insertadas/actualizadas...")
+        await mark_source_synced(conn, source_id)
+        print(f"  OK OSM: {count} entidades")
+    finally:
+        await conn.close()
 
 
 async def main():
-    conn = await get_conn()
-    try:
-        source_id = await get_source_id(conn, "osm")
-        await scrape(conn, source_id)
-        await mark_source_synced(conn, source_id)
-    finally:
-        await conn.close()
+    args = parse_args()
+    bbox = CABA_BBOX if args.scope == "caba" else PALERMO_BBOX
+    bbox_str = f"{bbox[0]},{bbox[2]},{bbox[1]},{bbox[3]}"
+    print(f"OSM scope={args.scope} bbox={bbox_str}")
+
+    queries = build_queries(bbox_str)
+    elements = await fetch_elements(queries)
+    print(f"  Total OSM: {len(elements)} nodos crudos")
+
+    candidates = []
+    skipped = 0
+    for el in elements:
+        c = to_candidate(el, args.scope, args.neighborhood, args.commune)
+        if c:
+            candidates.append(c)
+        else:
+            skipped += 1
+
+    candidates = bounded(candidates, args.limit)
+    print(f"OSM: {len(candidates)} entidades | scope={args.scope} | write={args.write} | skipped={skipped}")
+    if not args.write:
+        return
+    await write_candidates(candidates)
 
 
 if __name__ == "__main__":

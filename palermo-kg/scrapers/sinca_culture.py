@@ -1,13 +1,18 @@
 """Importa el Mapa Cultural SINCA como registros históricos visibles."""
 import argparse, asyncio
 import httpx
-from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, get_conn, ensure_source, mark_source_synced
+from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.contract import add_source_arguments, bounded
+from scrapers.shared.geo_scope import record_in_scope
 
+SUPPORTS_SOURCE_CONTRACT = True
 API = "https://datos.gob.ar/api/3/action/package_show?id=cultura-mapa-cultural-espacios-culturales"
 ORIGIN = "https://www.datos.gob.ar/dataset/cultura-mapa-cultural-espacios-culturales"
-LAT_MIN, LAT_MAX, LNG_MIN, LNG_MAX = -34.615, -34.555, -58.455, -58.390
 KINDS = {"bibliotecas": "biblioteca", "museo": "museo", "teatro": "teatro", "cine": "cine", "librerias": "libreria", "galerias": "galeria_arte", "centros": "centro_cultural", "monumentos": "monumento"}
+
+def parse_args():
+    parser = argparse.ArgumentParser(); add_source_arguments(parser); return parser.parse_args()
 
 def pick(row, *keys):
     for key in keys:
@@ -18,7 +23,7 @@ def flt(v):
     except ValueError: return None
 
 async def main():
-    parser = argparse.ArgumentParser(); parser.add_argument("--write", action="store_true"); args = parser.parse_args()
+    args = parse_args()
     async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
         package = (await client.get(API)).json()["result"]
         resources = package.get("resources", [])
@@ -30,13 +35,16 @@ async def main():
                 import csv, io
                 for row in csv.DictReader(io.StringIO(data)):
                     lat, lng = flt(pick(row, "latitud", "lat", "latitude")), flt(pick(row, "longitud", "lng", "lon", "longitude"))
-                    if lat and lng and LAT_MIN <= lat <= LAT_MAX and LNG_MIN <= lng <= LNG_MAX: rows.append((row, lat, lng, resource["url"]))
+                    if not lat or not lng: continue
+                    if not record_in_scope(lat=lat, lng=lng, scope=args.scope, neighborhood=args.neighborhood, commune=args.commune): continue
+                    rows.append((row, lat, lng, resource["url"]))
             except Exception as exc: print(f"recurso omitido: {exc}")
-    print(f"{len(rows)} espacios culturales históricos de Palermo | write={args.write}")
+    rows = bounded(rows, args.limit)
+    print(f"{len(rows)} espacios culturales históricos | scope={args.scope} | write={args.write}")
     if not args.write: return
     conn = await get_conn()
     try:
-        source_id = await ensure_source(conn, "sinca", ORIGIN, 4)
+        source_id = await get_source_id(conn, "sinca")
         records=[]; props=[]
         for row, lat, lng, origin in rows:
             name = normalize_name(pick(row, "nombre", "nombre_espacio", "denominacion"))

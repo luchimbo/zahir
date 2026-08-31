@@ -35,6 +35,7 @@ acceso, última ejecución, filas leídas, entidades afectadas y error si falló
 | `refes_historical` | anual | XLSX oficial | Fuente 2024: sólo validación histórica, no sustituye GCBA. |
 | `transporte_rmba` | manual | KML oficial | Red histórica; complementa y no reemplaza movilidad GCBA. |
 | `national_monuments` | desactivada | descubrimiento | Sin descarga estructurada unificada validada; no ingerir automáticamente. |
+| `cnv` | desactivada | pendiente | Registros públicos son buscador por registro individual, sin export masivo; no automatizar hasta validar dataset. |
 
 ## Control previo a una fuente nueva
 
@@ -42,6 +43,45 @@ acceso, última ejecución, filas leídas, entidades afectadas y error si falló
 2. Ejecutar una muestra pequeña, filtrada a Palermo, sin carga masiva.
 3. Medir duplicados, geocodificación y propiedades útiles.
 4. Registrar la fuente y agregar smoke test antes de calendarizarla.
+
+## Pilotos y promoción
+
+Todas las fuentes nuevas se ejecutan primero como piloto limitado. El único
+entrypoint es `scripts/run_sources.py`:
+
+```powershell
+# valida (sin escritura) un adaptador con contrato
+.\.venv\Scripts\python scripts\run_sources.py --source gcba_sports --validate
+# escribe una muestra y sólo habilita el refresh si supera los controles
+.\.venv\Scripts\python scripts\run_sources.py --source gcba_sports --pilot --limit 25 --promote
+# consulta cuáles fuentes quedaron habilitadas
+.\.venv\Scripts\python scripts\run_sources.py --status
+```
+
+Un piloto debe devolver registros Palermo, origen trazable y cero errores
+fatales. `--promote` habilita exclusivamente la fuente que cumpla esos
+criterios; el refresh diario ejecuta sólo fuentes promovidas.
+
+Los adaptadores candidatos usan una URL de dataset oficial explícita, para
+evitar convertir portales o buscadores web en scraping no autorizado:
+
+| Fuente | Variable de dataset |
+|---|---|
+| Trenes SOFSE | `TRENES_SOFSE_DATA_URL` |
+| IDECBA Comuna / alquileres | `IDECBA_COMUNA_DATA_URL` / `IDECBA_ALQUILERES_DATA_URL` |
+| GCBA economía circular / turismo | `GCBA_ECOCIRCULAR_DATA_URL` / `GCBA_TURISMO_DATA_URL` |
+| SUBE | `SUBE_OPEN_DATA_URL` |
+| CIJ / MPF / RPI | `CIJ_CAUSAS_DATA_URL`, `MPF_DELITOS_DATA_URL`, `RPI_CONSULTAS_DATA_URL` |
+
+`CIJ` y `RPI` siguen requiriendo validación de términos y se mantienen en
+modo `approval` aunque exista una URL configurada.
+
+## Programador local
+
+`scripts/install_task_scheduler.ps1` instala la tarea diaria
+`PalermoKG-DailyRefresh` a las 03:00. La tarea llama a
+`scripts/scheduled_refresh.py`, evita ejecuciones concurrentes mediante Task
+Scheduler y conserva los últimos 30 logs en `logs/`.
 
 ## Fuentes evaluadas y no activadas
 
@@ -52,6 +92,33 @@ acceso, última ejecución, filas leídas, entidades afectadas y error si falló
 - **INPI, marcas:** el portal permite consultas individuales de marcas, pero
   todavía no se validó una interfaz oficial de descarga o API para una ingesta
   repetible. Queda en evaluación manual.
+- **CNV, mercado de capitales:** se evaluó `cnv.gov.ar/SitioWeb/RegistrosPublicos`
+  (agentes, agentes de PIC, mercados, calificadoras, auditores, idóneos, PSAV) y
+  `cnv.gov.ar/sitioweb/empresas` (emisoras). Los nueve registros son buscadores
+  por apellido/razón social/CUIT/número, con página de detalle por resultado
+  (`DetallesRegistrosPublicos/{id}`), sin botón de exportación ni endpoint
+  JSON/CSV documentado. El único dataset masivo real de CNV encontrado en
+  datos.gob.ar (`sspm-fondos-comunes-inversion`) es agregado por tipo de fondo,
+  no un padrón de entidades con domicilio. No se activa: automatizar el
+  buscador sería scraping de un portal de consulta, lo que la política del
+  proyecto evita explícitamente. Reevaluar si CNV publica alguna vez un
+  dataset abierto de emisoras/agentes en su catálogo de datos abiertos
+  (`argentina.gob.ar/cnv/transparencia/catalogos-de-datos-abiertos`).
+- **SSN, aseguradoras:** `datosabiertos.ssn.gob.ar` sí es un portal CKAN real
+  con CSV masivo (CC-BY 4.0) para aseguradoras, sociedades de productores
+  asesores, agentes institorios, etc. — a diferencia de CNV, el problema no es
+  de acceso sino de dato: ninguno de esos CSV trae domicilio. Se intentó
+  enriquecer los `LegalEntity` de IGJ cruzando por CUIT en vez de crear
+  entidades sin ubicación, pero los 877 `LegalEntity` cargados hoy no tienen
+  la propiedad `cuit` (se cargaron con una versión anterior de `igj.py` y
+  `sources.scraped_at` de `igj` está en `NULL`). Sin CUIT del lado de IGJ el
+  cruce no tiene con qué matchear. Reevaluar cuando se recargue IGJ con la
+  versión actual del scraper (si vuelve a correr, sí escribe `cuit`).
+- **BCRA/SGR, otras entidades financieras:** `datos.gob.ar` sólo tiene
+  agregados (préstamos a entidades financieras, indicadores de SGR), no un
+  padrón de entidades con domicilio; `bcra.gob.ar`/`www2.bcra.gob.ar` no
+  respondió de forma confiable desde este entorno. No hay candidato viable
+  todavía en este rubro.
 
 ## Auditoría
 

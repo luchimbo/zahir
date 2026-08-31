@@ -349,6 +349,45 @@ p {
   background: #9d958d;
 }
 
+.geography-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 14px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line-soft);
+  background: #f8f0e1;
+}
+
+.geography-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.geography-controls select {
+  min-width: 150px;
+  height: 31px;
+  padding: 0 28px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fffdf8;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.geography-controls span {
+  margin-left: auto;
+  color: #336357;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
 .submitted-chip {
   display: inline-flex;
   width: fit-content;
@@ -1099,6 +1138,15 @@ p {
 
   .composer-input-row {
     grid-template-columns: 22px minmax(0, 1fr) 28px 40px;
+  }
+
+  .geography-controls {
+    align-items: stretch;
+  }
+
+  .geography-controls span {
+    width: 100%;
+    margin-left: 0;
   }
 
   .timeline-item {

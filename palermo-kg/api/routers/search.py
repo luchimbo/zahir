@@ -1,6 +1,7 @@
 import json
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from api.db import get_pool
+from api.geography import geography_for_entities, geography_join, resolve_scope_ids
 from api.query_log import log_query
 
 router = APIRouter(tags=["search"])
@@ -53,7 +54,8 @@ def score_entity(query_tokens: set[str], item: dict) -> tuple[float, int]:
 
 @router.get("/search")
 async def knowledge_search(q: str = Query(..., min_length=2), min_score: float = Query(0.25, ge=0, le=1),
-                           limit: int = Query(10, ge=1, le=50)):
+                           limit: int = Query(10, ge=1, le=50), neighborhood: str | None = None,
+                           commune: int | None = Query(None, ge=1, le=15)):
     """Búsqueda portable para TiDB: nombres, descripciones y propiedades activas."""
     tokens = tokenize(q) or {q.lower()}
     patterns = [f"%{token}%" for token in tokens]
@@ -65,9 +67,14 @@ async def knowledge_search(q: str = Query(..., min_length=2), min_score: float =
     candidate_limit = min(limit * 20, 300)
     pool = await get_pool()
     async with pool.acquire() as conn:
+        try:
+            neighborhood_id, commune_id, _, _ = await resolve_scope_ids(conn, neighborhood, commune)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        scope_condition = geography_join(neighborhood_id, commune_id)
         rows = await conn.fetch(f"""SELECT DISTINCT e.id, e.name, e.entity_type, e.subtype, e.description,
             e.importance, e.origin_url, e.lat, e.lng FROM entities e
-            WHERE e.is_active=TRUE AND e.canonical_id IS NULL AND ({' OR '.join(predicates)})
+            WHERE e.is_active=TRUE AND e.canonical_id IS NULL {f'AND {scope_condition}' if scope_condition else ''} AND ({' OR '.join(predicates)})
             ORDER BY e.importance DESC, e.name LIMIT {candidate_limit}""", *params)
         ids = [row["id"] for row in rows]
         props = []
@@ -76,6 +83,7 @@ async def knowledge_search(q: str = Query(..., min_length=2), min_score: float =
             placeholders = ", ".join(f"${i+1}" for i in range(len(ids)))
             props = await conn.fetch(f"SELECT entity_id, `key`, value, confidence, origins FROM active_properties WHERE entity_id IN ({placeholders}) ORDER BY confidence DESC", *ids)
             records = await conn.fetch(f"SELECT entity_id,record_type,payload FROM legal_entity_records WHERE entity_id IN ({placeholders})", *ids)
+        geography = await geography_for_entities(conn, [str(item) for item in ids])
     grouped = {}
     for prop in props:
         item = dict(prop)
@@ -92,6 +100,7 @@ async def knowledge_search(q: str = Query(..., min_length=2), min_score: float =
         item = dict(row)
         item["properties"] = grouped.get(item["id"], [])
         item["legal_records"] = grouped_records.get(item["id"], [])
+        item["geography"] = geography.get(item["id"], {"neighborhood": None, "commune": None})
         item["score"], item["property_hits"] = score_entity(tokens, item)
         if item["score"] < min_score:
             continue

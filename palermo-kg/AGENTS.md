@@ -1,4 +1,4 @@
-# AGENTS.md — Palermo Knowledge Graph
+# AGENTS.md — CABA Knowledge Graph
 
 Instrucciones para agentes IA que operan sobre este repositorio.
 
@@ -6,7 +6,7 @@ Instrucciones para agentes IA que operan sobre este repositorio.
 
 ## Qué es este proyecto
 
-Knowledge graph hiper-local sobre Palermo, Buenos Aires. Base de datos de entidades verificadas (negocios, inmuebles, transporte, cultura, salud, educación, etc.) para que un agente IA pueda responder preguntas sobre el barrio sin alucinar.
+Knowledge graph sobre CABA. Base de datos de entidades verificadas (negocios, inmuebles, transporte, cultura, salud, educación, etc.) para que un agente IA pueda responder preguntas sobre la Ciudad sin alucinar. Palermo es un filtro territorial, no el límite del producto.
 
 Stack: TiDB Cloud (MySQL 8 compatible) · FastAPI · Python scrapers · Next.js
 
@@ -126,7 +126,7 @@ Todos los endpoints filtran `canonical_id IS NULL` automáticamente.
 
 ## Agente conversacional (`agent/agent.py`)
 
-El agente responde preguntas sobre Palermo usando la API como única fuente de verdad.
+El agente responde preguntas sobre CABA usando la API como única fuente de verdad.
 
 **Flujo de respuesta:**
 1. Recibe pregunta del usuario
@@ -138,7 +138,7 @@ El agente responde preguntas sobre Palermo usando la API como única fuente de v
 **El agente NO debe:**
 - Inventar datos sobre negocios, precios o ubicaciones
 - Hacer afirmaciones sin haberlas verificado en la API
-- Responder sobre zonas fuera de Palermo y sus subbarrios (Palermo Soho, Hollywood, Chico, etc.)
+- Responder sobre zonas fuera de CABA.
 
 **El agente SÍ puede:**
 - Decir "no sé" cuando la DB no tiene datos

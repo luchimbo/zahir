@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from api.db import get_pool
 from api.query_log import log_query
 from api.routers.search import knowledge_search
+from geography_catalog import NEIGHBORHOOD_TO_COMMUNE, normalize_geography, resolve_neighborhood
 
 router = APIRouter(tags=["search"])
 
@@ -23,40 +24,6 @@ LLM = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.environ.get("OPENROUTER_API_KEY"),
 )
-
-PALERMO_RESTAURANT_ZONES = [
-    {
-        "id": "zone-palermo-soho",
-        "name": "Palermo Soho",
-        "bounds": (-34.6025, -34.5860, -58.4405, -58.4210),
-    },
-    {
-        "id": "zone-palermo-hollywood",
-        "name": "Palermo Hollywood",
-        "bounds": (-34.5860, -34.5720, -58.4495, -58.4235),
-    },
-    {
-        "id": "zone-alto-palermo-botanico",
-        "name": "Alto Palermo / Botanico",
-        "bounds": (-34.5965, -34.5790, -58.4210, -58.4030),
-    },
-    {
-        "id": "zone-las-canitas",
-        "name": "Las Canitas",
-        "bounds": (-34.5745, -34.5585, -58.4435, -58.4215),
-    },
-    {
-        "id": "zone-palermo-chico-bosques",
-        "name": "Palermo Chico / Bosques",
-        "bounds": (-34.5850, -34.5590, -58.4115, -58.3860),
-    },
-    {
-        "id": "zone-villa-freud-guadalupe",
-        "name": "Villa Freud / Guadalupe",
-        "bounds": (-34.6025, -34.5890, -58.4210, -58.4040),
-    },
-]
-
 
 CITABLE_KEYS = {
     "address", "phone", "website", "instagram", "rating", "review_count",
@@ -126,12 +93,15 @@ def is_restaurant_zone_count_query(query: str) -> bool:
     return asks_zone and asks_count and "restaurant" in q
 
 
-def zone_for_point(lat: float, lng: float) -> dict | None:
-    for zone in PALERMO_RESTAURANT_ZONES:
-        min_lat, max_lat, min_lng, max_lng = zone["bounds"]
-        if min_lat <= lat <= max_lat and min_lng <= lng <= max_lng:
-            return zone
-    return None
+def inferred_neighborhood(query: str) -> str | None:
+    normalized = f" {normalize_geography(query)} "
+    candidates = sorted(NEIGHBORHOOD_TO_COMMUNE, key=len, reverse=True)
+    for candidate in candidates:
+        if f" {normalize_geography(candidate)} " in normalized:
+            return candidate
+    # Includes Palermo Soho/Hollywood aliases without treating them as official
+    # administrative units.
+    return resolve_neighborhood(query)
 
 
 def host_from_url(url: str) -> str:
@@ -139,63 +109,34 @@ def host_from_url(url: str) -> str:
     return match.group(1) if match else "fuente"
 
 
-async def build_restaurant_zone_count_payload(query: str) -> dict | None:
+async def build_restaurant_zone_count_payload(query: str, neighborhood: str | None = None,
+                                              commune: int | None = None) -> dict | None:
     pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT e.id::text, e.name, e.lat::float AS lat, e.lng::float AS lng, e.origin_url
-        FROM entities e
-        WHERE e.entity_type = 'Organization'
-          AND e.subtype = 'restaurant'
-          AND e.is_active = true
-          AND e.canonical_id IS NULL
-          AND e.lat IS NOT NULL
-          AND e.lng IS NOT NULL
-        """
-    )
+    async with pool.acquire() as conn:
+        # This aggregation deliberately follows persisted official geography,
+        # not approximate Palermo boxes.
+        sql = """SELECT place.id, place.name, place.lat, place.lng, COUNT(DISTINCT e.id) total,
+            GROUP_CONCAT(DISTINCT e.origin_url SEPARATOR '|') origins
+            FROM entities e JOIN relationships r ON r.from_entity_id=e.id AND r.relationship_type='LOCATED_IN'
+            JOIN entities place ON place.id=r.to_entity_id AND place.entity_type='Location'
+            LEFT JOIN relationships h ON h.from_entity_id=place.id AND h.relationship_type='PART_OF'
+            WHERE e.entity_type='Organization' AND e.subtype='restaurant' AND e.is_active=TRUE
+              AND e.canonical_id IS NULL AND place.name NOT LIKE 'Comuna %'
+              AND place.name <> 'Ciudad Autónoma de Buenos Aires'"""
+        params = []
+        if neighborhood:
+            params.append(neighborhood); sql += f" AND place.name=${len(params)}"
+        elif commune:
+            params.append(f"Comuna {commune}"); sql += f" AND h.to_entity_id=(SELECT id FROM entities WHERE name=${len(params)} AND entity_type='Location' LIMIT 1)"
+        rows = await conn.fetch(sql + " GROUP BY place.id, place.name, place.lat, place.lng ORDER BY total DESC LIMIT 5", *params)
     if not rows:
         return None
-
-    buckets: dict[str, dict] = {}
-    for zone in PALERMO_RESTAURANT_ZONES:
-        buckets[zone["id"]] = {
-            "id": zone["id"],
-            "name": zone["name"],
-            "count": 0,
-            "lat_sum": 0.0,
-            "lng_sum": 0.0,
-            "sources": set(),
-            "examples": [],
-        }
-
-    for row in rows:
-        zone = zone_for_point(float(row["lat"]), float(row["lng"]))
-        if not zone:
-            continue
-        bucket = buckets[zone["id"]]
-        bucket["count"] += 1
-        bucket["lat_sum"] += float(row["lat"])
-        bucket["lng_sum"] += float(row["lng"])
-        if row["origin_url"]:
-            bucket["sources"].add(row["origin_url"])
-        if len(bucket["examples"]) < 3:
-            bucket["examples"].append(row["name"])
-
-    ranked = [bucket for bucket in buckets.values() if bucket["count"] > 0]
-    ranked.sort(key=lambda item: item["count"], reverse=True)
-    if not ranked:
-        return None
-
     valid_at = date.today().isoformat()
-    top_zones = ranked[:5]
+    top_zones = [dict(row) for row in rows]
     lines = [
-        "## Zonas con mayor cantidad de restaurantes en Palermo",
+        f"## Barrios con mayor cantidad de restaurantes{' en ' + neighborhood if neighborhood else ' en CABA'}",
         "",
-        (
-            "Agrupe las entidades `Organization / restaurant` del KG por coordenadas "
-            "aproximadas de subzonas de Palermo. No es un límite catastral oficial, "
-            "pero sirve para leer concentración gastronómica."
-        ),
+        "El ranking usa las relaciones territoriales oficiales disponibles en el grafo.",
         "",
     ]
     citations = []
@@ -203,14 +144,12 @@ async def build_restaurant_zone_count_payload(query: str) -> dict | None:
     explainability = []
 
     for index, zone in enumerate(top_zones, start=1):
-        lat = zone["lat_sum"] / zone["count"]
-        lng = zone["lng_sum"] / zone["count"]
-        source_urls = sorted(zone["sources"])[:5]
+        lat = float(zone["lat"]) if zone.get("lat") is not None else None
+        lng = float(zone["lng"]) if zone.get("lng") is not None else None
+        source_urls = [url for url in str(zone.get("origins") or "").split("|") if url][:5]
         source_refs = [{"url": url, "valid_at": valid_at} for url in source_urls]
-        examples = ", ".join(zone["examples"])
         lines.append(
-            f"- **{zone['name']}**: {zone['count']} restaurantes registrados. "
-            f"Centroide promedio: {lat:.6f}, {lng:.6f}. [{index}]"
+            f"- **{zone['name']}**: {zone['total']} restaurantes registrados. [{index}]"
         )
         citations.append({
             "entity_id": zone["id"],
@@ -221,18 +160,16 @@ async def build_restaurant_zone_count_payload(query: str) -> dict | None:
             "id": zone["id"],
             "name": zone["name"],
             "type": "Location",
-            "subtype": "restaurant_density_zone",
+            "subtype": "neighborhood",
             "lat": lat,
             "lng": lng,
-            "source_count": len(zone["sources"]),
-            "synthetic": True,
+            "source_count": len(source_urls),
         })
         explainability.append({
             "index": index,
             "text": (
                 f"{zone['name']} aparece en el ranking porque concentra "
-                f"{zone['count']} restaurantes con coordenadas dentro del KG"
-                + (f"; ejemplos: {examples}." if examples else ".")
+                f"{zone['total']} restaurantes vinculados al barrio oficial."
             ),
             "entity_id": zone["id"],
             "entity_name": zone["name"],
@@ -241,19 +178,10 @@ async def build_restaurant_zone_count_payload(query: str) -> dict | None:
             "sources": source_refs,
         })
 
-    lines.extend([
-        "",
-        (
-            "Para una respuesta estrictamente oficial haría falta una capa de polígonos "
-            "de subbarrios; con los datos actuales, el ranking se calcula por puntos "
-            "georreferenciados."
-        ),
-    ])
-
     await log_query(
         query_mode="search_natural",
         query_text=query,
-        result_count=sum(zone["count"] for zone in ranked),
+        result_count=sum(int(zone["total"]) for zone in top_zones),
         entity_types_returned=["Location", "Organization"],
     )
 
@@ -331,7 +259,7 @@ def build_noise_answer(query: str, entities: list[dict]) -> str:
 
     ranked = sorted(noise_entities, key=noise_high, reverse=True)
     lines = [
-        f"## Zonas de ruido nocturno en Palermo",
+        f"## Zonas de ruido nocturno",
         "",
         "Los rangos más altos detectados en el grafo son:",
         "",
@@ -362,7 +290,7 @@ def build_extractive_answer(query: str, entities: list[dict]) -> str:
     lines = [
         f"## Respuesta sobre {query}",
         "",
-        f"Encontré {len(entities)} resultados relevantes en el grafo de Palermo:",
+        f"Encontré {len(entities)} resultados relevantes en el grafo de CABA:",
         "",
     ]
     for index, entity in enumerate(entities, start=1):
@@ -438,7 +366,7 @@ def build_explainability(entities: list[dict], citations: list[dict]) -> list[di
 
 
 def build_prompt(query: str, context: str) -> str:
-    return f"""Sos un asistente del Palermo Knowledge Graph, una base de datos verificada sobre el barrio de Palermo, Buenos Aires.
+    return f"""Sos un asistente del CABA Knowledge Graph, una base de datos verificada sobre la Ciudad Autónoma de Buenos Aires.
 
 Responde la pregunta del usuario usando UNICAMENTE los datos que te paso abajo.
 Si los datos no alcanzan, responde exactamente: "No tengo datos suficientes para responder."
@@ -461,16 +389,20 @@ Responde en español."""
 async def knowledge_search_natural(
     q: str = Query(..., min_length=2),
     max_entities: int = Query(5, ge=1, le=10),
+    neighborhood: str | None = None,
+    commune: int | None = Query(None, ge=1, le=15),
 ):
     """
     Respuesta en lenguaje natural con citas reales a entidades y fuentes.
     """
+    inferred = neighborhood or inferred_neighborhood(q)
     if is_restaurant_zone_count_query(q):
-        aggregate_payload = await build_restaurant_zone_count_payload(q)
+        aggregate_payload = await build_restaurant_zone_count_payload(q, inferred, commune)
         if aggregate_payload:
             return aggregate_payload
 
-    search_result = await knowledge_search(q=q, min_score=0.25, limit=max_entities)
+    search_result = await knowledge_search(q=q, min_score=0.25, limit=max_entities,
+                                           neighborhood=inferred, commune=commune)
     entities = search_result.get("results", [])
     if is_noise_query(q, entities):
         entities = sorted(entities, key=noise_high, reverse=True)
@@ -485,8 +417,11 @@ async def knowledge_search_natural(
         return {
             "query": q,
             "answer": "No tengo datos suficientes para responder.",
+            "answer_markdown": "No tengo datos suficientes para responder.",
             "citations": [],
             "entities_used": [],
+            "mentioned_entities": [],
+            "explainability": [],
         }
 
     context_blocks = []

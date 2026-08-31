@@ -17,18 +17,20 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import (
     get_conn,
     get_source_id,
     bulk_get_or_create_entities,
     bulk_upsert_properties,
+    mark_source_synced,
 )
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
-APH_GEOJSON_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/areas-proteccion-historica/areas-proteccion-historica.geojson"
+SUPPORTS_SOURCE_CONTRACT = True
 
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390  # Bounding box de Palermo
+APH_GEOJSON_URL = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/secretaria-de-desarrollo-urbano/areas-proteccion-historica/areas-proteccion-historica.geojson"
 
 
 def clean(value) -> str:
@@ -48,15 +50,6 @@ def parse_float(value):
         return float(value.replace(",", "."))
     except ValueError:
         return None
-
-
-def valid_lat_lng(lat, lng) -> bool:
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
-    )
 
 
 def parse_geojson_centroid(geometry: dict) -> tuple[float | None, float | None]:
@@ -86,20 +79,17 @@ def parse_geojson_centroid(geometry: dict) -> tuple[float | None, float | None]:
     return sum(lats) / len(lats), sum(lngs) / len(lngs)
 
 
-def is_palermo(props: dict, lat, lng) -> bool:
-    barrio = clean(props.get("BARRIOS", "")).upper()
-    comuna = clean(props.get("COMUNA", ""))
-    if "PALERMO" in barrio or comuna == "14" or comuna == "Comuna 14":
-        return True
-    return valid_lat_lng(lat, lng)
-
-
-async def main():
+def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="Scraper Patrimonio Histórico CABA")
     parser.add_argument("--limit", type=int, default=2000,
-                        help="Límite de registros a cargar para evitar saturar Neon (default: 2000)")
-    args = parser.parse_args()
+                        help="Límite de registros a cargar para evitar saturar la DB (default: 2000)")
+    add_source_arguments(parser)
+    return parser.parse_args()
+
+
+async def main():
+    args = parse_args()
 
     print("=== Scraper GCBA Patrimonio Historico ===")
     conn = await get_conn()
@@ -121,9 +111,17 @@ async def main():
             geometry = feat.get("geometry") or {}
             
             lat, lng = parse_geojson_centroid(geometry)
-            if not is_palermo(props, lat, lng):
+            if not record_in_scope(
+                lat=lat,
+                lng=lng,
+                row_neighborhood=clean(props.get("BARRIOS")),
+                row_commune=clean(props.get("COMUNA")),
+                scope=args.scope,
+                neighborhood=args.neighborhood,
+                commune=args.commune,
+            ):
                 continue
-                
+
             direccion = clean(props.get("1_DIRECCIO") or "")
             if not direccion:
                 calle = clean(props.get("1_CALLE") or "")
@@ -163,16 +161,18 @@ async def main():
             })
             
         total_found = len(candidates)
-        print(f"  {total_found} edificios patrimoniales encontrados en Palermo.")
-        
-        if args.limit and total_found > args.limit:
-            print(f"  Limitando la ingesta a los primeros {args.limit} registros para cuidar la DB.")
-            candidates = candidates[:args.limit]
-            
+        print(f"  {total_found} edificios patrimoniales encontrados en el scope ({args.scope}).")
+
+        candidates = bounded(candidates, args.limit)
+
         if not candidates:
             print("  Sin registros para ingresar.")
             return
-            
+
+        if not args.write:
+            print(f"  [DRY-RUN] {len(candidates)} candidatos. Correr con --write para ingresar.")
+            return
+
         # Ingesta por lotes
         chunk_size = 500
         for i in range(0, len(candidates), chunk_size):
@@ -213,8 +213,9 @@ async def main():
             print(f"    Ingestados {i + len(chunk)}/{len(candidates)}...")
             await asyncio.sleep(0.1)
             
+        await mark_source_synced(conn, source_id)
         print(f"  [OK] Ingesta Patrimonio Historico completada con éxito.")
-        
+
     finally:
         await conn.close()
 

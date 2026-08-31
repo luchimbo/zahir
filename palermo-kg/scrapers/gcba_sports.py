@@ -1,12 +1,14 @@
-"""Ingesta oficial de polideportivos y programas deportivos GCBA en Palermo."""
+"""Ingesta oficial de polideportivos y programas deportivos GCBA en CABA."""
 import argparse, asyncio, csv, io, sys
 from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
-from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, get_conn, get_source_id, mark_source_synced
+from scrapers.shared.contract import SourceResult, add_source_arguments, bounded
+from scrapers.shared.db_helpers import bulk_get_or_create_entities, bulk_upsert_properties, ensure_source, get_conn, mark_source_synced
 from scrapers.shared.normalizer import normalize_name, normalize_value
+from scrapers.shared.tabular_source import _in_scope
 
 URLS = {
  "sports_center": "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/vicejefatura-de-gobierno/polideportivos/polideportivos.csv",
@@ -25,25 +27,31 @@ async def fetch(client, url):
  delimiter = ";" if text.partition("\n")[0].count(";") >= text.partition("\n")[0].count(",") else ","
  return list(csv.DictReader(io.StringIO(text), delimiter=delimiter))
 
+SUPPORTS_SOURCE_CONTRACT = True
+
 async def main():
- parser=argparse.ArgumentParser(); parser.add_argument("--write",action="store_true"); args=parser.parse_args(); candidates=[]
+ parser=argparse.ArgumentParser(); add_source_arguments(parser); args=parser.parse_args(); candidates=[]; result=SourceResult()
  async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
   for subtype, url in URLS.items():
-   for row in await fetch(client, url):
+   rows = await fetch(client, url); result.seen += len(rows)
+   for row in rows:
     lat,lng=num(row.get("lat")),num(row.get("long"))
-    if not palermo(row,lat,lng): continue
+    if not _in_scope(row, lat, lng, scope=args.scope, neighborhood=args.neighborhood, commune=args.commune): continue
     title=clean(row.get("nom") or row.get("programa")); venue=clean(row.get("sede"))
     name=normalize_name(f"{title} - {venue}" if venue else title)
     if not name: continue
-    candidates.append({"name":name,"entity_type":"Facility" if subtype=="sports_center" else "Event","subtype":subtype,"lat":lat,"lng":lng,"origin_url":url,"values":(("address",clean(row.get("dir") or row.get("calle_nombre")),"string"),("neighborhood",clean(row.get("barr") or row.get("barrio")),"string"),("activity",clean(row.get("act") or row.get("actividad")),"string"),("hours",clean(row.get("horario")),"string"),("phone",clean(row.get("tel") or row.get("telefono")),"string"),("website",clean(row.get("web")),"url"))})
- print(f"Deportes GCBA en Palermo: {len(candidates)}")
- if not args.write: return
+    address = clean(row.get("dir") or row.get("calle_nombre"))
+    candidates.append({"name":name,"identity_key":f"{name}|{address}|{lat}|{lng}","entity_type":"Facility" if subtype=="sports_center" else "Event","subtype":subtype,"lat":lat,"lng":lng,"origin_url":url,"values":(("address",address,"string"),("neighborhood",clean(row.get("barr") or row.get("barrio")),"string"),("activity",clean(row.get("act") or row.get("actividad")),"string"),("hours",clean(row.get("horario")),"string"),("phone",clean(row.get("tel") or row.get("telefono")),"string"),("website",clean(row.get("web")),"url"))})
+ candidates=bounded(candidates,args.limit); result.accepted=len(candidates); result.coverage={"scope":args.scope,"accepted_records":len(candidates)}
+ print(f"Deportes GCBA en {args.scope}: {len(candidates)}")
+ if not args.write: return result
  conn=await get_conn()
  try:
-  sid=await get_source_id(conn,"ba_data"); ids=await bulk_get_or_create_entities(conn,candidates); props=[]
+  sid=await ensure_source(conn,"gcba_sports","https://data.buenosaires.gob.ar",1); ids=await bulk_get_or_create_entities(conn,candidates); props=[]
   for c in candidates:
    for key,value,value_type in c["values"]:
     if clean(value): props.append({"entity_id":ids[c["name"]],"key":key,"value":normalize_value(value),"value_type":value_type,"confidence":.95,"origins":[c["origin_url"]]})
-  await bulk_upsert_properties(conn,props,sid); await mark_source_synced(conn,sid)
+  await bulk_upsert_properties(conn,props,sid); await mark_source_synced(conn,sid); result.written=len(candidates)
  finally: await conn.close()
+ return result
 if __name__=="__main__": asyncio.run(main())

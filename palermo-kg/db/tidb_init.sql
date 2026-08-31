@@ -99,6 +99,7 @@ CREATE INDEX IF NOT EXISTS properties_source_idx ON properties(source_id);
 CREATE INDEX IF NOT EXISTS tags_tag_idx ON tags(tag);
 CREATE INDEX IF NOT EXISTS relationships_from_idx ON relationships(from_entity_id);
 CREATE INDEX IF NOT EXISTS relationships_to_idx ON relationships(to_entity_id);
+CREATE UNIQUE INDEX IF NOT EXISTS relationships_identity_idx ON relationships(from_entity_id, relationship_type, to_entity_id);
 CREATE INDEX IF NOT EXISTS query_log_created_idx ON query_log(created_at);
 CREATE INDEX IF NOT EXISTS source_sync_runs_source_idx ON source_sync_runs(source_id, started_at);
 CREATE INDEX IF NOT EXISTS external_ids_entity_idx ON external_ids(entity_id);

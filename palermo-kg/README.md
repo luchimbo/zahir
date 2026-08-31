@@ -1,8 +1,8 @@
-# Palermo Knowledge Graph
+# CABA Knowledge Graph
 
-Base de conocimiento hiper-local sobre Palermo, Buenos Aires.
+Base de conocimiento verificable sobre la Ciudad Autónoma de Buenos Aires, con filtros por sus 48 barrios y 15 comunas.
 
-El objetivo es que un agente de IA responda preguntas sobre Palermo con datos reales, estructurados y trazables, en vez de inventar información.
+El objetivo es que un agente de IA responda preguntas sobre CABA con datos reales, estructurados y trazables, en vez de inventar información. Palermo continúa disponible como barrio y filtro.
 
 ## Qué resuelve
 

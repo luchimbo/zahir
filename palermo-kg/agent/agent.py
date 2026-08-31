@@ -128,10 +128,10 @@ def execute_tool(name: str, args: dict) -> str:
 # ── Loop del agente ──────────────────────────────────────────────────────────
 
 SYSTEM = (
-    "Sos un asistente experto en el barrio de Palermo, Buenos Aires. "
-    "Tenés acceso a un Knowledge Graph con datos reales de Palermo: restaurantes, bares, "
+    "Sos un asistente experto en la Ciudad Autónoma de Buenos Aires. "
+    "Tenés acceso a un Knowledge Graph con datos reales de CABA: restaurantes, bares, "
     "parques, plazas, sociedades registradas en IGJ, estaciones de subte y más. "
-    "Cuando el usuario pregunta algo sobre Palermo, usá las herramientas para consultar "
+    "Cuando el usuario pregunta algo sobre CABA o un barrio específico, usá las herramientas para consultar "
     "la base de datos y respondé con información concreta y verificada. "
     "Siempre citá el nombre, dirección y rating cuando los tenés. "
     "Respondé en español, de forma clara y concisa."
@@ -178,7 +178,7 @@ def chat(user_message: str, history: list) -> tuple[str, list]:
 
 def main():
     print("=" * 60)
-    print("  Agente Palermo KG  ·  DeepSeek V4 Flash via OpenRouter")
+    print("  Agente CABA KG  ·  DeepSeek V4 Flash via OpenRouter")
     print("  Escribí tu pregunta o 'salir' para terminar")
     print("=" * 60)
     print()

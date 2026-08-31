@@ -14,7 +14,7 @@ import {
   Sparkles,
   X
 } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import CoordinateMap from "../components/CoordinateMap";
 import ExplorerPanel from "../components/ExplorerPanel";
@@ -26,17 +26,17 @@ import StructuredResults from "../components/StructuredResults";
 import { fetchJson } from "../lib/api";
 import { deriveExplainability, deriveMentioned } from "../lib/derive";
 import { renderMarkdown } from "../lib/format";
-import { NaturalPayload, Phase, SearchEntity, SearchPayload } from "../lib/types";
+import { GeographiesPayload, NaturalPayload, Phase, SearchEntity, SearchPayload } from "../lib/types";
 
 const SUGGESTIONS = [
-  "Qué decks gastronómicos hay en Palermo?",
-  "Qué zonas tienen más ruido nocturno?",
-  "Qué habilitaciones tipo café hay en Palermo?",
-  "Qué monumentos hay en Palermo?",
+  "Qué parques gratuitos hay en Caballito?",
+  "Qué museos hay en San Telmo?",
+  "Qué habilitaciones tipo café hay en Villa Crespo?",
+  "Qué monumentos hay en Recoleta?",
   "Qué ferias o mercados hay en Palermo?"
 ];
 
-const HISTORY_KEY = "palermo-kg-search-history";
+const HISTORY_KEY = "caba-kg-search-history";
 
 export default function Home() {
   const [query, setQuery] = useState("");
@@ -57,6 +57,15 @@ export default function Home() {
   const [structuredOpen, setStructuredOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [geographies, setGeographies] = useState<GeographiesPayload | null>(null);
+  const [neighborhood, setNeighborhood] = useState("");
+  const [commune, setCommune] = useState("");
+
+  useEffect(() => {
+    void fetchJson<GeographiesPayload>("/api/kg/geographies")
+      .then(setGeographies)
+      .catch(() => setGeographies(null));
+  }, []);
 
   const mentioned = useMemo(() => deriveMentioned(naturalPayload), [naturalPayload]);
   const explainability = useMemo(() => deriveExplainability(naturalPayload), [naturalPayload]);
@@ -87,12 +96,17 @@ export default function Home() {
     saveHistory(trimmed);
 
     try {
+      const geographyParams = new URLSearchParams();
+      if (neighborhood) geographyParams.set("neighborhood", neighborhood);
+      else if (commune) geographyParams.set("commune", commune);
+      const scope = geographyParams.toString();
+      const suffix = scope ? `&${scope}` : "";
       const [natural, search] = await Promise.all([
         fetchJson<NaturalPayload>(
-          `/api/kg/search/natural?q=${encodeURIComponent(trimmed)}&max_entities=6`
+          `/api/kg/search/natural?q=${encodeURIComponent(trimmed)}&max_entities=6${suffix}`
         ),
         fetchJson<SearchPayload>(
-          `/api/kg/search?q=${encodeURIComponent(trimmed)}&limit=10&min_score=0.2`
+          `/api/kg/search?q=${encodeURIComponent(trimmed)}&limit=10&min_score=0.2${suffix}`
         )
       ]);
       setNaturalPayload(natural);
@@ -124,7 +138,7 @@ export default function Home() {
         </button>
         <span>Playground</span>
         <ChevronRight size={15} aria-hidden />
-        <span>Palermo Knowledge Search</span>
+        <span>CABA Knowledge Search</span>
         {submittedQuery ? (
           <>
             <ChevronRight size={15} aria-hidden />
@@ -140,8 +154,8 @@ export default function Home() {
               <Network size={23} aria-hidden />
             </div>
             <div>
-              <h1>Palermo Knowledge Search</h1>
-              <p>Respuestas verificadas en markdown, con citas, entidades y explicación.</p>
+              <h1>CABA Knowledge Search</h1>
+              <p>Datos verificables de los 48 barrios, con citas, entidades y explicación.</p>
             </div>
           </div>
 
@@ -178,7 +192,7 @@ export default function Home() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="¿Qué querés saber sobre Palermo?"
+              placeholder="¿Qué querés saber sobre CABA?"
               disabled={phase === "loading"}
             />
             {query ? (
@@ -189,6 +203,23 @@ export default function Home() {
             <button className="submit-button" type="submit" aria-label="Buscar">
               {phase === "loading" ? <Loader2 className="spin" size={20} aria-hidden /> : <ArrowRight size={20} aria-hidden />}
             </button>
+          </div>
+          <div className="geography-controls" aria-label="Filtros geográficos">
+            <label>
+              Barrio
+              <select value={neighborhood} onChange={(event) => { setNeighborhood(event.target.value); if (event.target.value) setCommune(""); }} disabled={phase === "loading"}>
+                <option value="">Toda CABA</option>
+                {geographies?.neighborhoods.map((item) => <option key={item.slug} value={item.slug}>{item.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Comuna
+              <select value={commune} onChange={(event) => { setCommune(event.target.value); if (event.target.value) setNeighborhood(""); }} disabled={phase === "loading"}>
+                <option value="">Todas</option>
+                {geographies?.communes.map((item) => <option key={item.slug} value={item.commune ?? ""}>{item.name}</option>)}
+              </select>
+            </label>
+            <span>{neighborhood ? "Barrio oficial" : commune ? "Filtro por comuna" : "Cobertura: toda CABA"}</span>
           </div>
           {submittedQuery ? (
             <div className="submitted-chip">{submittedQuery}</div>

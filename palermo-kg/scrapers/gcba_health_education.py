@@ -13,6 +13,7 @@ Datasets:
 No toca datos inmobiliarios.
 """
 
+import argparse
 import asyncio
 import csv
 import io
@@ -20,19 +21,18 @@ import sys
 
 import httpx
 
+from scrapers.shared.contract import add_source_arguments, bounded
 from scrapers.shared.db_helpers import (
     get_conn,
     get_or_create_entity,
     get_source_id,
+    mark_source_synced,
     upsert_property,
 )
+from scrapers.shared.geo_scope import record_in_scope
 from scrapers.shared.normalizer import normalize_name, normalize_value
 
 CDN = "https://cdn.buenosaires.gob.ar/datosabiertos/datasets"
-
-LAT_MIN, LAT_MAX = -34.615, -34.555
-LNG_MIN, LNG_MAX = -58.455, -58.390
-
 
 DATASETS = [
     {
@@ -131,6 +131,8 @@ DATASETS = [
 NUMBER_KEYS = {"commune", "street_number", "school_cui", "school_cue"}
 URL_KEYS = {"website"}
 
+SUPPORTS_SOURCE_CONTRACT = True
+
 
 def clean(value) -> str:
     if value is None:
@@ -159,28 +161,12 @@ def parse_float(value):
         return None
 
 
-def valid_lat_lng(lat, lng) -> bool:
-    return (
-        lat is not None
-        and lng is not None
-        and LAT_MIN <= lat <= LAT_MAX
-        and LNG_MIN <= lng <= LNG_MAX
-    )
-
-
-def is_palermo(row: dict, lat=None, lng=None) -> bool:
-    raw_barrio = first_value(row, ["barrio", "bar", "neighborhood"])
-    if raw_barrio:
-        barrio = (
-            raw_barrio.upper()
-            .replace("Á", "A")
-            .replace("É", "E")
-            .replace("Í", "I")
-            .replace("Ó", "O")
-            .replace("Ú", "U")
-        )
-        return "PALERMO" in barrio
-    return valid_lat_lng(lat, lng)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Scraper GCBA Salud + Educacion (CABA)")
+    add_source_arguments(parser)
+    parser.add_argument("datasets", nargs="*", help="Sólo procesar estos datasets.")
+    parser.add_argument("--offset", type=int, default=0, help="Saltar N candidatas por dataset (reanudación).")
+    return parser.parse_args()
 
 
 def coords_from_feature(feature: dict):
@@ -192,7 +178,7 @@ def coords_from_feature(feature: dict):
         return None, None
     lng = parse_float(coords[0])
     lat = parse_float(coords[1])
-    if valid_lat_lng(lat, lng):
+    if lat is not None and lng is not None:
         return lat, lng
     return None, None
 
@@ -200,9 +186,21 @@ def coords_from_feature(feature: dict):
 def coords_from_row(row: dict, dataset: dict):
     lat = parse_float(first_value(row, dataset.get("lat_keys", ["lat"])))
     lng = parse_float(first_value(row, dataset.get("lng_keys", ["long", "lon", "lng"])))
-    if valid_lat_lng(lat, lng):
+    if lat is not None and lng is not None:
         return lat, lng
     return None, None
+
+
+def in_scope(row: dict, dataset: dict, lat, lng, args) -> bool:
+    return record_in_scope(
+        lat=lat,
+        lng=lng,
+        row_neighborhood=first_value(row, dataset.get("props", {}).get("neighborhood", [])),
+        row_commune=first_value(row, dataset.get("props", {}).get("commune", [])),
+        scope=args.scope,
+        neighborhood=args.neighborhood,
+        commune=args.commune,
+    )
 
 
 def infer_education_subtype(level: str) -> str:
@@ -260,7 +258,7 @@ def property_value_type(key: str, value: str):
     return "string", normalize_value(value)
 
 
-async def scrape_dataset(conn, source_id: str, client: httpx.AsyncClient, dataset: dict) -> int:
+async def scrape_dataset(conn, source_id: str, client: httpx.AsyncClient, dataset: dict, args) -> int:
     print(f"-> {dataset['name']}...")
     try:
         rows = await load_rows(client, dataset)
@@ -268,15 +266,21 @@ async def scrape_dataset(conn, source_id: str, client: httpx.AsyncClient, datase
         print(f"  ERROR descargando dataset: {exc}")
         return 0
 
-    candidates = [(row, lat, lng) for row, lat, lng in rows if is_palermo(row, lat, lng)]
-    offset = int(dataset.get("offset") or 0)
+    candidates = [(row, lat, lng) for row, lat, lng in rows if in_scope(row, dataset, lat, lng, args)]
     total_candidates = len(candidates)
+    offset = int(getattr(args, "offset", 0) or 0)
     if offset:
         candidates = candidates[offset:]
+    candidates = bounded(candidates, args.limit)
     print(
-        f"  {len(rows)} filas descargadas | {total_candidates} candidatas Palermo"
-        + (f" | retomando desde {offset}" if offset else "")
+        f"  {len(rows)} filas descargadas | {total_candidates} candidatas en ámbito {args.scope}"
+        + (f" | offset {offset}" if offset else "")
+        + (f" | limitada a {args.limit}" if args.limit else "")
     )
+
+    if not args.write:
+        print(f"  dry-run: {len(candidates)} entidades serían insertadas")
+        return len(candidates)
 
     count = skipped = 0
     for row, lat, lng in candidates:
@@ -325,26 +329,25 @@ async def scrape_dataset(conn, source_id: str, client: httpx.AsyncClient, datase
         if count % 25 == 0:
             print(f"  {count}/{len(candidates)} procesadas...")
 
-    print(f"  OK: {count} entidades de Palermo ({skipped} filas saltadas)")
+    print(f"  OK: {count} entidades de {args.scope} ({skipped} filas saltadas)")
     return count
 
 
 async def main():
-    print("=== Scraper GCBA Salud + Educacion ===")
+    args = parse_args()
+    print(f"=== Scraper GCBA Salud + Educacion (scope={args.scope}) ===")
     conn = await get_conn()
     try:
         source_id = await get_source_id(conn, "ba_data")
         total = 0
         async with httpx.AsyncClient(follow_redirects=True, timeout=90) as client:
-            selected = {arg for arg in sys.argv[1:] if not arg.isdigit()}
-            offset = next((int(arg) for arg in sys.argv[1:] if arg.isdigit()), 0)
             for dataset in DATASETS:
-                if selected and dataset["name"] not in selected:
+                if args.datasets and dataset["name"] not in args.datasets:
                     continue
-                if offset:
-                    dataset = {**dataset, "offset": offset}
-                total += await scrape_dataset(conn, source_id, client, dataset)
+                total += await scrape_dataset(conn, source_id, client, dataset, args)
                 await asyncio.sleep(0.5)
+            if args.write:
+                await mark_source_synced(conn, source_id)
         print(f"\nTotal: {total} entidades insertadas/actualizadas")
     finally:
         await conn.close()

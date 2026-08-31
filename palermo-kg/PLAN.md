@@ -1,6 +1,6 @@
-# Plan de Desarrollo - Palermo Knowledge Graph
+# Plan de Desarrollo - CABA Knowledge Graph
 
-Objetivo: construir un knowledge graph hiper-local de Palermo, Buenos Aires, verificable y trazable, para que un agente de IA responda con datos reales.
+Objetivo: construir un knowledge graph verificable y trazable de CABA, con cobertura por barrio y comuna, para que un agente de IA responda con datos reales.
 
 ## Estado consolidado
 

@@ -4,14 +4,15 @@ Fuente: https://data.buenosaires.gob.ar
 Tier 1 - datasets oficiales CSV sin autenticacion.
 
 Dataset: delitos
-Agrega las estadísticas por año y tipo de delito, y las asocia a la entidad canónica de Palermo.
+Agrega las estadísticas por año y tipo de delito, y las asocia a la entidad
+canónica de cada barrio en el alcance elegido (CABA por defecto).
 """
-
+import argparse
 import asyncio
 import csv
 import io
+import re
 import sys
-from collections import Counter
 from pathlib import Path
 
 import httpx
@@ -24,9 +25,15 @@ from scrapers.shared.db_helpers import (
     get_conn,
     get_source_id,
     get_or_create_entity,
+    mark_source_synced,
     upsert_property,
 )
-from scrapers.shared.normalizer import normalize_value
+from scrapers.shared.contract import add_source_arguments, bounded
+from scrapers.shared.geo_scope import record_in_scope
+from geography_catalog import resolve_neighborhood
+
+SUPPORTS_SOURCE_CONTRACT = True
+SOURCE_NAME = "ba_data"
 
 DELITOS_URLS = {
     2023: "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/ministerio-de-justicia-y-seguridad/delitos/delitos_2023.csv",
@@ -43,101 +50,77 @@ def slugify(text: str) -> str:
 
 
 async def main():
-    import re
+    parser = argparse.ArgumentParser()
+    add_source_arguments(parser)
+    args = parser.parse_args()
+
     print("=== Scraper GCBA Estadisticas de Delitos ===")
     conn = await get_conn()
     try:
-        source_id = await get_source_id(conn, "ba_data")
-        
-        # Obtener o crear la entidad canónica de Palermo
-        palermo_id = await conn.fetchval(
-            """
-            SELECT id FROM entities
-            WHERE entity_type = 'Location' AND name = 'Palermo (barrio)' AND canonical_id IS NULL
-            LIMIT 1
-            """
-        )
-        if not palermo_id:
-            print("  Palermo (barrio) no encontrado. Creándolo...")
-            palermo_id = await get_or_create_entity(
-                conn,
-                name="Palermo (barrio)",
-                entity_type="Location",
-                subtype="barrio",
-                origin_url="https://data.buenosaires.gob.ar"
-            )
-            
-        palermo_id = str(palermo_id)
-        print(f"  Entidad Palermo (barrio) ID: {palermo_id}")
-        
+        source_id = await get_source_id(conn, SOURCE_NAME)
+
         async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
+            seen = 0
             for anio, url in DELITOS_URLS.items():
                 print(f"-> Procesando delitos de {anio}...")
                 try:
                     r = await client.get(url)
                     r.raise_for_status()
                     text = r.content.decode("utf-8-sig", "replace")
-                    rows = csv.DictReader(io.StringIO(text))
+                    rows = list(csv.DictReader(io.StringIO(text)))
                 except Exception as exc:
                     print(f"  Fallo descarga de {anio}: {exc}")
                     continue
-                
-                # Contadores para tipos de delitos en Palermo
-                stats = Counter()
-                total_palermo = 0
-                
+                rows = bounded(rows, args.limit) if args.limit else rows
+
                 for row in rows:
-                    barrio = (row.get("barrio") or "").strip().upper()
-                    if barrio == "PALERMO":
-                        tipo = (row.get("tipo") or "Otros").strip()
+                    barrio_raw = (row.get("barrio") or "").strip()
+                    if not barrio_raw:
+                        continue
+                    seen += 1
+                    if not record_in_scope(row_neighborhood=barrio_raw, scope=args.scope,
+                                           neighborhood=args.neighborhood, commune=args.commune):
+                        continue
+
+                    official = resolve_neighborhood(barrio_raw)
+                    nombre = official or barrio_raw
+                    palermo_id = await get_or_create_entity(
+                        conn,
+                        name=f"{nombre} (barrio)" if official else f"{barrio_raw} (barrio)",
+                        entity_type="Location",
+                        subtype="barrio",
+                        origin_url="https://data.buenosaires.gob.ar"
+                    )
+                    palermo_id = str(palermo_id)
+
+                    tipo = (row.get("tipo") or "Otros").strip()
+                    try:
+                        cantidad = int(row.get("cantidad") or 1)
+                    except ValueError:
                         cantidad = 1
-                        try:
-                            cantidad = int(row.get("cantidad") or 1)
-                        except ValueError:
-                            pass
-                        stats[tipo] += cantidad
-                        total_palermo += cantidad
-                
-                print(f"  Total delitos en Palermo para {anio}: {total_palermo}")
-                if total_palermo == 0:
-                    print("  No se encontraron registros de Palermo. Saltando upsert.")
-                    continue
-                    
-                # Guardar estadísticas agregadas
-                for tipo, count in stats.items():
+
                     tipo_slug = slugify(tipo)
                     prop_key = f"crime_stats_{anio}_{tipo_slug}"
-                    print(f"    {tipo}: {count} -> {prop_key}")
-                    
+                    print(f"    {nombre} | {anio} | {tipo}: {cantidad} -> {prop_key}")
                     await upsert_property(
                         conn,
                         palermo_id,
                         prop_key,
-                        str(count),
+                        str(cantidad),
                         "number",
                         source_id,
                         origins=[url],
                         confidence=0.98
                     )
-                
-                # Guardar total anual
-                await upsert_property(
-                    conn,
-                    palermo_id,
-                    f"crime_stats_{anio}_total",
-                    str(total_palermo),
-                    "number",
-                    source_id,
-                    origins=[url],
-                    confidence=0.98
-                )
-                
-        print("\n[OK] Scraper de estadísticas de delitos finalizado con éxito.")
-        
+
+        if args.write:
+            await mark_source_synced(conn, source_id)
+
+        print(f"[OK] Delitos: {seen} filas evaluadas | scope={args.scope} | write={args.write}")
+
     finally:
         await conn.close()
 
 
 if __name__ == "__main__":
-    import re  # Asegurar import de re
     asyncio.run(main())
