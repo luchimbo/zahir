@@ -33,7 +33,8 @@ async def source_health():
                    COUNT(p.id) AS properties,
                    COUNT(DISTINCT p.entity_id) AS entities,
                    MAX(p.last_seen_at) AS last_seen_at,
-                   COUNT(DISTINCT CASE WHEN e.lat IS NOT NULL AND e.lng IS NOT NULL THEN p.entity_id END) AS geocoded_entities
+                   COUNT(DISTINCT CASE WHEN e.lat IS NOT NULL AND e.lng IS NOT NULL THEN p.entity_id END) AS geocoded_entities,
+                   (SELECT COUNT(*) FROM observations o WHERE o.source_id=s.id) AS observations
             FROM sources s
             LEFT JOIN source_policies policy ON policy.source_id=s.id
             LEFT JOIN properties p ON p.source_id = s.id
@@ -58,7 +59,9 @@ async def data_quality():
                  GROUP BY LOWER(name), entity_type HAVING COUNT(*) > 1
                ) AS unresolved_duplicates) AS duplicates,
               (SELECT COUNT(*) FROM entities WHERE canonical_id IS NOT NULL) AS canonicalized_duplicates,
-              (SELECT COUNT(*) FROM entities WHERE canonical_id IS NULL AND is_active AND (lat IS NULL OR lng IS NULL)) AS canonical_without_coordinates,
+              (SELECT COUNT(*) FROM entities WHERE canonical_id IS NULL AND is_active
+                 AND entity_type NOT IN ('MarketIndex','Security','EconomicSeries','Regulation')
+                 AND (lat IS NULL OR lng IS NULL)) AS canonical_without_coordinates,
               (SELECT COUNT(*) FROM properties WHERE valid_until IS NOT NULL AND valid_until <= CURRENT_DATE) AS expired_properties,
               (SELECT COUNT(*) FROM relationships WHERE confidence < 0.75) AS low_confidence_relationships
             """

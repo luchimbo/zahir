@@ -97,7 +97,10 @@ Agente IA
 | `GET /api/search/natural?q=texto` | Respuesta natural con citas reales |
 | `GET /api/entity/search?name=texto` | Búsqueda fuzzy de entidad |
 | `GET /api/entity/{uuid}` | Entidad completa (params: `include_history`, `source`, `historical`) |
+| `GET /api/entity/{uuid}/observations` | Puntos históricos trazables de una entidad |
 | `GET /api/entity/{uuid}/{key}` | Propiedad específica |
+| `GET /api/series` | Catálogo de series financieras/económicas por fuente |
+| `GET /api/series/{series_key}` | Puntos revisados de una serie, con `from`, `to` y `source` |
 | `GET /api/query` | Consulta tabular por filtros (incluye `source`, `historical`) |
 | `GET /api/insights/query-gaps` | Consultas sin resultados |
 | `GET /api/insights/query-summary` | Resumen de uso reciente |
@@ -114,6 +117,14 @@ Agente IA
 - `explainability`
 
 Si no hay datos suficientes, responde: `No tengo datos suficientes para responder.`
+
+## Capa financiera nacional
+
+MERVAL, YPFD, estadísticas y comunicaciones BCRA viven en la misma base como
+entidades nacionales sin coordenadas y puntos en `observations`. BYMA es la
+fuente oficial primaria; Ámbito queda como respaldo approval-gated y cada
+punto conserva fuente y fecha. La correlación con alquileres queda pendiente
+de configurar `IDECBA_ALQUILERES_DATA_URL`.
 
 ## Setup
 

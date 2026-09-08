@@ -37,3 +37,10 @@ def test_new_official_public_sources_are_registered_for_automation():
 
 def test_source_pilots_are_opt_in_contracts():
     assert all(source.pilot_limit > 0 for source in SOURCES)
+
+
+def test_national_financial_sources_are_explicit_and_contract_backed():
+    sources = {source.name: source for source in SOURCES}
+    expected = {"byma_merval", "byma_ypf", "ambito_merval", "ambito_ypf", "bcra_estadisticas", "bcra_comunicaciones"}
+    assert expected <= sources.keys()
+    assert all(sources[name].territory == "national" and sources[name].supports_contract for name in expected)

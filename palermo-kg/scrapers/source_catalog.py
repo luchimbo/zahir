@@ -19,6 +19,7 @@ class SourceSpec:
     pilot_limit: int = 25
     min_pilot_records: int = 1
     supports_contract: bool = False
+    territory: str = "caba"  # caba | national — ver scripts/run_sources.py y db/RULES.md §11
 
 
 SOURCES = (
@@ -32,6 +33,13 @@ SOURCES = (
     SourceSpec("transporte_rmba", "scrapers.transporte_rmba", "https://datos.gob.ar", 1, "public", "Red de transporte", args=("--write",), supports_contract=True),
     SourceSpec("indec_censo", "scrapers.indec_census", "https://www.indec.gob.ar", 1, "public", "Contexto censal", data_class="aggregate", refresh_schedule="census"),
     SourceSpec("refes_historical", "scrapers.refes_historical", "https://datos.gob.ar", 4, "public", "Establecimientos de salud REFES", args=("--write",), data_class="historical", refresh_schedule="annual"),
+    # TODO: renombrar a "gcba_cajeros" — en realidad ingiere un CSV de cajeros
+    # automáticos del GCBA, no datos del BCRA. Ver SOURCE_OPERATIONS.md. No se
+    # renombra en este cambio: sources.source_name es UNIQUE y todo (properties,
+    # runs, checkpoints) cuelga de sources.id; renombrar exige una migración
+    # UPDATE sources SET source_name=... en el mismo commit que este catálogo
+    # y scrapers/bcra_sucursales.py, o register_sources() recrea "bcra" vacío
+    # en el próximo run y las properties de cajeros quedan huérfanas.
     SourceSpec("bcra", "scrapers.bcra_sucursales", "https://www.bcra.gob.ar", 1, "public", "Cajeros y redes bancarias"),
     SourceSpec("google_places", "scrapers.google_places", "https://maps.googleapis.com/maps/api/place", 2, "credential", "Ratings, horarios y contacto", "GOOGLE_PLACES_API_KEY", (), "current", "weekly", "paid"),
     SourceSpec("igj", "scrapers.igj", "https://www.igj.gob.ar", 2, "public", "Sociedades y estado legal", data_class="current", refresh_schedule="weekly"),
@@ -79,6 +87,43 @@ SOURCES = (
     SourceSpec("rpi_consultas", "scrapers.rpi_consultas", "https://www.dnrpi.jus.gov.ar", 2, "approval", "Registro de la propiedad", refresh_schedule="quarterly", cost_policy="approval", supports_contract=True),
     SourceSpec("idecba_alquileres", "scrapers.idecba_alquileres", "https://www.estadisticaciudad.gob.ar", 1, "public", "Mercado de alquileres", data_class="aggregate", refresh_schedule="quarterly", supports_contract=True),
     SourceSpec("cnv", "scrapers.cnv", "https://www.cnv.gov.ar/sitioweb/registrospublicos", 2, "approval", "Emisoras y agentes registrados", data_class="current", refresh_schedule="weekly", cost_policy="approval"),
+
+    # ── Capa nacional/contextual: series financieras y normativa sin geografía ──
+    # Ver db/RULES.md §11 y CABA_SOURCE_RESEARCH.md § Criterios de admisión.
+    SourceSpec("byma_merval", "scrapers.byma_merval", "https://open.bymadata.com.ar", 1, "public",
+               "Serie histórica diaria oficial del índice S&P Merval",
+               data_class="historical", refresh_schedule="daily",
+               license_url="https://open.bymadata.com.ar", pilot_limit=250, min_pilot_records=20,
+               supports_contract=True, territory="national"),
+    SourceSpec("byma_ypf", "scrapers.byma_ypf", "https://open.bymadata.com.ar", 1, "public",
+               "Serie histórica diaria oficial de YPFD",
+               data_class="historical", refresh_schedule="daily",
+               license_url="https://open.bymadata.com.ar", pilot_limit=250, min_pilot_records=20,
+               supports_contract=True, territory="national"),
+    # mode="approval": el endpoint es real y estable (confirmado por inspección
+    # del propio front-end de ambito.com), pero no hay licencia de reuso
+    # publicada — mismo criterio conservador que cnv. Requiere --include-approval.
+    SourceSpec("ambito_merval", "scrapers.ambito_series", "https://www.ambito.com", 2, "approval",
+               "Serie histórica diaria del índice Merval (mercados.ambito.com)",
+               data_class="historical", refresh_schedule="daily", cost_policy="approval",
+               license_url="https://www.ambito.com/contenidos/aviso-legal.html",
+               pilot_limit=250, min_pilot_records=20, supports_contract=True, territory="national"),
+    SourceSpec("ambito_ypf", "scrapers.ambito_series", "https://www.ambito.com", 2, "approval",
+               "Serie histórica diaria de YPFD.BA (mercados.ambito.com)",
+               data_class="historical", refresh_schedule="daily", cost_policy="approval",
+               license_url="https://www.ambito.com/contenidos/aviso-legal.html",
+               args=("--symbol", "YPFD.BA"),
+               pilot_limit=250, min_pilot_records=20, supports_contract=True, territory="national"),
+    SourceSpec("bcra_estadisticas", "scrapers.bcra_estadisticas", "https://api.bcra.gob.ar", 1, "public",
+               "Estadísticas monetarias y cambiarias oficiales del BCRA (API v4.0/v1.0)",
+               data_class="historical", refresh_schedule="daily",
+               license_url="https://www.bcra.gob.ar/BCRAyVos/catalogo-de-APIs-banco-central.asp",
+               pilot_limit=100, min_pilot_records=20, supports_contract=True, territory="national"),
+    SourceSpec("bcra_comunicaciones", "scrapers.bcra_comunicaciones", "https://www.bcra.gob.ar", 3, "credential",
+               "Comunicaciones A/B/C del BCRA (normativa, PDF + resumen LLM opcional)",
+               data_class="historical", refresh_schedule="weekly", cost_policy="paid",
+               license_url="https://www.bcra.gob.ar", pilot_limit=10, min_pilot_records=1,
+               supports_contract=True, territory="national"),
 )
 
 

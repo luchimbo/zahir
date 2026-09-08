@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from api.db import get_pool, close_pool
-from api.routers import entity, geographies, insights, query, search, search_natural
+from api.routers import entity, geographies, insights, observations, query, search, search_natural
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,6 +21,7 @@ app = FastAPI(
 )
 
 app.include_router(entity.router, prefix="/api")
+app.include_router(observations.router, prefix="/api")
 app.include_router(geographies.router, prefix="/api")
 app.include_router(insights.router, prefix="/api")
 app.include_router(query.router,  prefix="/api")

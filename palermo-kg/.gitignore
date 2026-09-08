@@ -10,6 +10,7 @@ api-server*.log
 playwright-report/
 test-results/
 scrapers/.cache/
+scrapers/bcra_cache/
 frontend/.next/
 frontend/node_modules/
 frontend/.npm-cache/

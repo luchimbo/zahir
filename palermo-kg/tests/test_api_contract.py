@@ -52,7 +52,7 @@ async def test_retrieve_entity_shape(client):
     response = await client.get(f"/api/entity/{entity_id}")
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload.keys()) == {"entity", "properties", "relationships", "tags", "legal_records_summary", "geography"}
+    assert set(payload.keys()) == {"entity", "properties", "relationships", "tags", "legal_records_summary", "observations_summary", "geography"}
     assert payload["entity"]["id"] == entity_id
     assert isinstance(payload["properties"], list)
     assert isinstance(payload["relationships"], list)
@@ -95,5 +95,13 @@ async def test_insights_source_health(client):
     assert response.status_code == 200
     rows = response.json()["rows"]
     assert len(rows) >= 1
-    for key in ("source_name", "properties", "entities"):
+    for key in ("source_name", "properties", "entities", "observations"):
         assert key in rows[0]
+
+
+async def test_series_catalog_shape(client):
+    response = await client.get("/api/series")
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload) == {"total", "rows"}
+    assert isinstance(payload["rows"], list)

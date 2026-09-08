@@ -15,5 +15,9 @@ INSERT INTO entity_types (name, description) VALUES
     ('Trademark',       'Marcas registradas en INPI'),
     ('LegalCase',       'Expedientes judiciales del Poder Judicial CABA'),
     ('Parcel',          'Parcelas catastrales de ARBA/AGIP'),
-    ('HistoricalRecord','Registros históricos del IHCBA y Archivo General de la Nación')
+    ('HistoricalRecord','Registros históricos del IHCBA y Archivo General de la Nación'),
+    ('MarketIndex',     'Índices bursátiles (MERVAL, S&P BYMA, etc.)'),
+    ('Security',        'Especies negociables listadas (acciones, ADRs)'),
+    ('EconomicSeries',  'Series estadísticas oficiales (BCRA, INDEC)'),
+    ('Regulation',      'Normativa y comunicaciones de organismos nacionales (BCRA, etc.)')
 ON CONFLICT (name) DO NOTHING;

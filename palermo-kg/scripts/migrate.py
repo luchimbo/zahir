@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MIGRATIONS = [Path("db/tidb_init.sql"), Path("db/11_igj_history.sql")]
+MIGRATIONS = [Path("db/tidb_init.sql"), Path("db/11_igj_history.sql"), Path("db/12_observations.sql")]
 
 
 def tls_context():

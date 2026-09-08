@@ -32,7 +32,7 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--write", action="store_true", help="Persiste los datos; sin esta opción sólo valida.")
     parser.add_argument("--limit", type=int, default=None, help="Máximo de registros aceptados.")
     parser.add_argument("--since", default=None, help="Cursor o fecha de origen, si la fuente la soporta.")
-    parser.add_argument("--scope", choices=("caba", "palermo"), default="caba", help="Ámbito territorial; CABA es el valor operativo por defecto.")
+    parser.add_argument("--scope", choices=("caba", "palermo", "national"), default="caba", help="Ámbito territorial; CABA es el valor operativo por defecto. 'national' es para fuentes sin geografía (ver db/RULES.md §11).")
     parser.add_argument("--neighborhood", help="Barrio oficial de CABA para acotar una ejecución.")
     parser.add_argument("--commune", type=int, choices=range(1, 16), help="Comuna para acotar una ejecución.")
 

@@ -99,6 +99,10 @@ Ver `db/RULES.md §3` para la lista completa. Tipos actuales:
 | `HistoricalRecord` | Clausuras, resoluciones del Boletín Oficial |
 | `Trademark` | Marcas comerciales |
 | `LegalCase` | Causas judiciales |
+| `MarketIndex` | Índices bursátiles nacionales sin geografía |
+| `Security` | Especies negociables nacionales sin geografía |
+| `EconomicSeries` | Series macroeconómicas oficiales sin geografía |
+| `Regulation` | Comunicaciones y normativa nacional sin geografía |
 
 ---
 
@@ -113,7 +117,10 @@ La API corre en `http://localhost:8000` con `python -m uvicorn api.main:app --re
 | `GET /api/search/natural?q=texto` | Respuesta natural con citas (fallback extractivo sin `OPENROUTER_API_KEY`) |
 | `GET /api/entity/search?name=texto` | Búsqueda por nombre exacto |
 | `GET /api/entity/{uuid}` | Detalle de entidad con propiedades activas (params: `include_history`, `source`, `historical`) |
+| `GET /api/entity/{uuid}/observations` | Observaciones temporales de una entidad |
 | `GET /api/entity/{uuid}/{key}` | Valor de una propiedad específica |
+| `GET /api/series` | Catálogo de series nacionales |
+| `GET /api/series/{series_key}` | Puntos trazables de una serie |
 | `GET /api/query` | Query tabular por filtros (tipo, subtipo, tag, `source`, `historical`) |
 | `GET /api/insights/query-gaps` | Consultas sin resultados |
 | `GET /api/insights/query-summary` | Resumen de uso |
@@ -139,6 +146,8 @@ El agente responde preguntas sobre CABA usando la API como única fuente de verd
 - Inventar datos sobre negocios, precios o ubicaciones
 - Hacer afirmaciones sin haberlas verificado en la API
 - Responder sobre zonas fuera de CABA.
+- Presentar una serie nacional como si fuera un dato territorial de CABA.
+- Citar un valor financiero sin fecha ni fuente.
 
 **El agente SÍ puede:**
 - Decir "no sé" cuando la DB no tiene datos

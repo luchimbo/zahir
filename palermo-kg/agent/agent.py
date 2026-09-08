@@ -95,6 +95,30 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_series",
+            "description": "Busca series financieras o económicas trazables: Merval, YPFD, dólar BCRA, reservas, inflación y tasas.",
+            "parameters": {"type": "object", "properties": {
+                "q": {"type": "string", "description": "Nombre o tema de la serie"},
+                "source": {"type": "string", "description": "Fuente opcional, por ejemplo byma_merval o ambito_merval"},
+            }, "required": ["q"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_series",
+            "description": "Obtiene puntos fechados de una serie y sus URLs de origen.",
+            "parameters": {"type": "object", "properties": {
+                "series_key": {"type": "string"}, "source": {"type": "string"},
+                "from": {"type": "string", "description": "YYYY-MM-DD"},
+                "to": {"type": "string", "description": "YYYY-MM-DD"},
+                "limit": {"type": "integer", "default": 100},
+            }, "required": ["series_key"]},
+        },
+    },
 ]
 
 # ── Ejecución de tools ───────────────────────────────────────────────────────
@@ -114,6 +138,11 @@ def execute_tool(name: str, args: dict) -> str:
                 r = http.get(f"{API_BASE}/api/query", params=params)
             elif name == "fuzzy_search":
                 r = http.get(f"{API_BASE}/api/search", params={"q": args["query"]})
+            elif name == "search_series":
+                r = http.get(f"{API_BASE}/api/series", params={k: v for k, v in args.items() if v is not None})
+            elif name == "get_series":
+                series_key = args["series_key"]
+                r = http.get(f"{API_BASE}/api/series/{series_key}", params={k: v for k, v in args.items() if k != "series_key" and v is not None})
             else:
                 return json.dumps({"error": f"Tool desconocido: {name}"})
 
@@ -133,7 +162,8 @@ SYSTEM = (
     "parques, plazas, sociedades registradas en IGJ, estaciones de subte y más. "
     "Cuando el usuario pregunta algo sobre CABA o un barrio específico, usá las herramientas para consultar "
     "la base de datos y respondé con información concreta y verificada. "
-    "Siempre citá el nombre, dirección y rating cuando los tenés. "
+    "Para datos financieros o BCRA usá search_series y get_series; siempre citá fecha y fuente del punto. "
+    "Si piden correlación con alquileres y no hay serie IDECBA, decí que no hay datos suficientes. "
     "Respondé en español, de forma clara y concisa."
 )
 

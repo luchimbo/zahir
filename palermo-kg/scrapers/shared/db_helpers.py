@@ -1,4 +1,5 @@
 """Operaciones de escritura compartidas, compatibles con TiDB/MySQL."""
+import hashlib
 import json
 import re
 from uuid import uuid4
@@ -205,10 +206,14 @@ async def register_source_policy(conn, source_id: str, *, data_class="current", 
 
 
 async def save_checkpoint(conn, source_id: str, cursor_value=None, content_hash=None, error_code=None, retry_count=0):
+    """Registra latido/estado del run. Un cursor/hash ausente no borra el valor
+    previo: COALESCE evita que el heartbeat inicial (sin cursor todavía) pise
+    el cursor guardado por la corrida anterior antes de que el adaptador corra."""
     await conn.execute(
         """INSERT INTO source_checkpoints (source_id,cursor_value,content_hash,last_heartbeat_at,last_error_code,retry_count)
            VALUES ($1,$2,$3,CURRENT_TIMESTAMP,$4,$5)
-           ON DUPLICATE KEY UPDATE cursor_value=VALUES(cursor_value),content_hash=VALUES(content_hash),
+           ON DUPLICATE KEY UPDATE cursor_value=COALESCE(VALUES(cursor_value),cursor_value),
+             content_hash=COALESCE(VALUES(content_hash),content_hash),
              last_heartbeat_at=CURRENT_TIMESTAMP,last_error_code=VALUES(last_error_code),retry_count=VALUES(retry_count)""",
         source_id, cursor_value, content_hash, error_code, retry_count,
     )
@@ -393,3 +398,83 @@ async def bulk_link_external_ids(conn, links: list[tuple[str, str, str]]):
            ON DUPLICATE KEY UPDATE entity_id=VALUES(entity_id)""",
         rows,
     )
+
+
+# ── Series temporales (observations) — capa nacional/contextual ────────────
+# Ver db/RULES.md sección 11: observations vs. properties vs. legal_entity_records.
+
+SERIES_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,149}")
+OBSERVATION_FREQUENCIES = {"daily", "weekly", "monthly", "quarterly", "annual", "irregular"}
+
+
+def observation_record_key(series_key: str, observed_period: str, payload: dict) -> str:
+    """Hash de contenido estable: una revisión del valor genera otro hash,
+    nunca pisa la fila anterior (AGENTS.md regla 2: nunca borrar historial)."""
+    canonical = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{series_key}|{observed_period}|{canonical}".encode()).hexdigest()
+
+
+async def bulk_upsert_observations(conn, observations: list[dict], source_id: str) -> int:
+    """Escribe puntos de serie sin pisar revisiones anteriores.
+
+    Cada ``obs`` en ``observations`` es un dict con: entity_id, series_key,
+    observed_at (date o 'YYYY-MM-DD'), observed_period (str), frequency
+    (opcional, default 'daily'), value (opcional), value_text (opcional),
+    unit (opcional), payload (opcional dict), origins (opcional list),
+    confidence (opcional, default 0.9).
+    """
+    rows_by_key = {}
+    for obs in observations:
+        series_key = obs["series_key"]
+        if not SERIES_KEY_RE.fullmatch(series_key):
+            raise ValueError(f"series_key inválida: {series_key!r}")
+        frequency = obs.get("frequency", "daily")
+        if frequency not in OBSERVATION_FREQUENCIES:
+            raise ValueError(f"frequency inválida: {frequency!r}")
+        if obs.get("value") is None and not obs.get("value_text"):
+            continue  # un punto sin valor no es un dato
+        payload = obs.get("payload") or {}
+        record_key = observation_record_key(series_key, obs["observed_period"], payload)
+        # La misma observación puede aparecer dos veces en una respuesta de
+        # proveedor. Conservamos una sola escritura, sin convertirla en una
+        # revisión artificial dentro del mismo lote.
+        rows_by_key[record_key] = (
+            str(uuid4()), obs["entity_id"], source_id, series_key,
+            obs["observed_at"], obs["observed_period"], frequency,
+            obs.get("value"), obs.get("value_text"), (obs.get("unit") or None) and str(obs["unit"])[:60],
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            json.dumps(obs.get("origins") or []),
+            record_key,
+            obs.get("confidence", 0.9),
+        )
+    if not rows_by_key:
+        return 0
+    record_keys = list(rows_by_key)
+    existing = set()
+    # TiDB/MySQL limita el tamaño práctico de IN; además de medir inserciones
+    # reales, se mantienen los heartbeats de `last_seen_at` para los duplicados.
+    for start in range(0, len(record_keys), 500):
+        chunk = record_keys[start:start + 500]
+        placeholders = ", ".join(f"${index + 2}" for index in range(len(chunk)))
+        found = await conn.fetch(
+            f"SELECT record_key FROM observations WHERE source_id=$1 AND record_key IN ({placeholders})",
+            source_id, *chunk,
+        )
+        existing.update(row["record_key"] for row in found)
+    rows = list(rows_by_key.values())
+    await conn.executemany(
+        """INSERT INTO observations
+           (id,entity_id,source_id,series_key,observed_at,observed_period,frequency,
+            value,value_text,unit,payload,origins,record_key,confidence)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+           ON DUPLICATE KEY UPDATE last_seen_at=CURRENT_TIMESTAMP""", rows)
+    return len(set(record_keys) - existing)
+
+
+async def latest_observation_date(conn, source_id: str, series_key: str):
+    """Cursor incremental real, derivado del dato ya escrito — no de
+    source_checkpoints, cuyo valor puede llegar en NULL antes de que el
+    adaptador corra (ver scripts/run_sources.py, save_checkpoint inicial)."""
+    return await conn.fetchval(
+        "SELECT MAX(observed_at) FROM observations WHERE source_id=$1 AND series_key=$2",
+        source_id, series_key)

@@ -57,10 +57,14 @@ async def retrieve_entity(entity_id: str, include_history: bool = False, source:
         legal_summary = await conn.fetch("""SELECT record_type, COUNT(*) AS total,
             MIN(observed_period) AS first_period, MAX(observed_period) AS last_period
             FROM legal_entity_records WHERE entity_id=$1 GROUP BY record_type ORDER BY record_type""", entity_id)
+        observations_summary = await conn.fetch("""SELECT series_key,COUNT(*) AS total,
+            MIN(observed_at) AS first_at,MAX(observed_at) AS last_at
+            FROM observations WHERE entity_id=$1 GROUP BY series_key ORDER BY series_key""", entity_id)
         geography = await geography_for_entities(conn, [entity_id])
     return {"entity": decode_json(dict(entity)), "properties": [decode_json(dict(p)) for p in props],
             "relationships": [dict(r) for r in rels], "tags": [t["tag"] for t in tags],
             "legal_records_summary": [dict(row) for row in legal_summary],
+            "observations_summary": [dict(row) for row in observations_summary],
             "geography": geography.get(entity_id, {"neighborhood": None, "commune": None})}
 
 
@@ -87,6 +91,35 @@ async def legal_records(entity_id: str, record_type: str | None = Query(None, pa
             LIMIT {limit} OFFSET {offset}""", *params)
     return {"total": total, "limit": limit, "offset": offset,
             "records": [decode_json(dict(row)) for row in rows]}
+
+
+@router.get("/entity/{entity_id}/observations")
+async def entity_observations(entity_id: str, series_key: str | None = None, source: str | None = None,
+                              from_date: str | None = Query(None, alias="from"),
+                              to_date: str | None = Query(None, alias="to"),
+                              limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0)):
+    """Observaciones trazables de una entidad, antes del catch-all dot notation."""
+    conditions, params = ["o.entity_id=$1"], [entity_id]
+    if series_key:
+        params.append(series_key); conditions.append(f"o.series_key=${len(params)}")
+    if source:
+        params.append(source); conditions.append(f"s.source_name=${len(params)}")
+    if from_date:
+        params.append(from_date); conditions.append(f"o.observed_at>=${len(params)}")
+    if to_date:
+        params.append(to_date); conditions.append(f"o.observed_at<=${len(params)}")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        entity = await conn.fetchval("SELECT id FROM entities WHERE id=$1 AND canonical_id IS NULL", entity_id)
+        if not entity:
+            raise HTTPException(status_code=404, detail="Entidad no encontrada")
+        rows = await conn.fetch(f"""SELECT o.series_key,o.observed_at,o.observed_period,o.frequency,
+            o.value,o.value_text,o.unit,o.payload,o.origins,o.confidence,o.first_seen_at,o.last_seen_at,
+            s.source_name,s.source_url FROM observations o JOIN sources s ON s.id=o.source_id
+            WHERE {' AND '.join(conditions)} ORDER BY o.observed_at,o.first_seen_at
+            LIMIT {limit} OFFSET {offset}""", *params)
+    records = [decode_json(dict(row)) for row in rows]
+    return {"total": len(records), "limit": limit, "offset": offset, "records": records}
 
 
 @router.get("/entity/{entity_id}/{key}")

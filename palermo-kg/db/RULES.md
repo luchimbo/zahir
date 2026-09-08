@@ -52,7 +52,9 @@ La vista `active_properties` filtra automáticamente las propiedades vigentes.
 - Nunca eliminar un tipo que tenga entidades (la FK lo impide)
 
 **Tipos actuales:**
-`Location` | `Facility` | `Organization` | `Property` | `Event` | `Transport` | `LegalEntity` | `Trademark` | `LegalCase` | `Parcel` | `HistoricalRecord`
+`Location` | `Facility` | `Organization` | `Property` | `Event` | `Transport` | `LegalEntity` | `Trademark` | `LegalCase` | `Parcel` | `HistoricalRecord` | `MarketIndex` | `Security` | `EconomicSeries` | `Regulation`
+
+Los últimos cuatro son la **capa nacional/contextual** (ver §11): se crean siempre con `lat=NULL, lng=NULL`, nunca compiten con entidades geográficas de CABA.
 
 ---
 
@@ -71,6 +73,10 @@ La vista `active_properties` filtra automáticamente las propiedades vigentes.
 | Facility | `is_free`, `admission_price_ars`, `hours_open`, `area_m2`, `rating` |
 | Location | `avg_rent_usd`, `avg_sale_usd_m2`, `walkability_score`, `population_estimate` |
 | LegalEntity | `cuit`, `estado`, `tipo_sociedad`, `fecha_constitucion` |
+| MarketIndex | `ticker`, `market`, `currency`, `series_description` |
+| Security | `ticker`, `market`, `isin`, `currency`, `issuer_name`, `series_description` |
+| EconomicSeries | `series_code`, `series_description`, `unit`, `frequency`, `publisher` |
+| Regulation | `document_number`, `document_letter`, `publication_date`, `document_url`, `summary`, `publisher`, `topic` |
 
 ---
 
@@ -189,3 +195,22 @@ Siempre ejecutar en este orden (las FKs dependen del orden):
 seed/entity_types.sql
 seed/sources.sql
 ```
+
+---
+
+## 11. Series temporales (`observations`) — capa nacional/contextual
+
+Para datos que llegan como **puntos fechados de una serie** (cotización diaria de un índice o acción, variable monetaria del BCRA), no usar `properties` (pensada para el *estado vigente* de una entidad, una fila por cambio) ni `legal_entity_records` (hechos jurídicos de IGJ, `record_type` fijo). Usar la tabla `observations` (`db/12_observations.sql`).
+
+**Cuándo usar cada tabla:**
+- `properties` → el valor *actual* de un atributo de una entidad (`price_usd`, `rating`).
+- `legal_entity_records` → hechos jurídicos repetibles de IGJ (domicilio, autoridades, asambleas, balances).
+- `observations` → una serie temporal: muchos puntos fechados, misma entidad, mismo `series_key`, uno por período.
+
+**`series_key`** sigue la misma regex que las property keys: `^[a-z][a-z0-9_]{0,149}$`, con la convención `<fuente>_<sujeto>_<medida>` (ej.: `ambito_merval_close`, `byma_ypfd_price`, `bcra_var_1`). Es estable en el tiempo aunque cambie la descripción humana de la serie (esa vive en una `property` o en `payload`).
+
+**`unit`** usa un vocabulario corto: `ARS`, `USD`, `pct`, `index`, `shares`.
+
+**Revisión, no reemplazo:** un valor que cambia genera una **fila nueva** con otro `record_key` (hash de `series_key|observed_period|payload`), nunca un `UPDATE` sobre el valor. `ON DUPLICATE KEY UPDATE` sólo toca `last_seen_at`. Ver `scrapers/shared/db_helpers.bulk_upsert_observations`.
+
+**Entidades nacionales sin geografía:** `MarketIndex`, `Security`, `EconomicSeries` y `Regulation` se crean siempre con `lat=NULL, lng=NULL`. Esto es intencional: son series de alcance nacional, no ubicaciones de CABA, y no deben aparecer en `scripts/caba_readiness.py` como "entidades sin asignar".

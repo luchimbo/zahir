@@ -80,8 +80,8 @@ async def register_sources(sources=SOURCES):
 
 
 async def run_source(source, allow_paid=False, pilot_limit=None, promote=False, validate_only=False, include_approval=False,
-                     scope="caba", neighborhood=None, commune=None):
-    if scope == "caba" and not source.supports_contract:
+                     scope="caba", neighborhood=None, commune=None, since=None):
+    if source.territory == "caba" and scope in ("caba", "palermo") and not source.supports_contract:
         print(f"SKIP {source.name}: adaptador heredado aún limitado a Palermo; migrarlo al contrato territorial antes de cargar CABA.")
         return "skipped"
     if source.mode == "approval" and not include_approval:
@@ -115,15 +115,19 @@ async def run_source(source, allow_paid=False, pilot_limit=None, promote=False, 
             if source.module in WRITE_OPT_IN_MODULES and "--write" not in source_args:
                 source_args.append("--write")
             if source.supports_contract:
-                source_args.extend(("--scope", scope))
-                if neighborhood:
-                    source_args.extend(("--neighborhood", neighborhood))
-                if commune:
-                    source_args.extend(("--commune", str(commune)))
+                effective_scope = "national" if source.territory == "national" else scope
+                source_args.extend(("--scope", effective_scope))
+                if source.territory != "national":
+                    if neighborhood:
+                        source_args.extend(("--neighborhood", neighborhood))
+                    if commune:
+                        source_args.extend(("--commune", str(commune)))
                 if not validate_only and "--write" not in source_args:
                     source_args.append("--write")
                 if pilot_limit is not None:
                     source_args.extend(("--limit", str(pilot_limit)))
+                if since:
+                    source_args.extend(("--since", since))
             sys.argv = [source.module, *source_args]
             result = module.main()
             if inspect.isawaitable(result):
@@ -134,7 +138,9 @@ async def run_source(source, allow_paid=False, pilot_limit=None, promote=False, 
                 raise TypeError(f"{source.module} debe devolver SourceResult; devolvió {type(result).__name__}")
         finally:
             sys.argv = original_argv
-        promoted = result.ok and result.accepted >= source.min_pilot_records and result.written >= source.min_pilot_records
+        # Un piloto idempotente puede revalidar datos ya cargados y escribir
+        # cero filas nuevas. La promoción mide evidencia válida, no inserts.
+        promoted = result.ok and result.accepted >= source.min_pilot_records
         status = "completed" if result.ok else "partial"
         error = "; ".join(result.errors) or None
         conn = await get_conn()
@@ -177,10 +183,13 @@ async def main():
     parser.add_argument("--validate", action="store_true", help="Valida adaptadores con contrato sin escribir.")
     parser.add_argument("--include-approval", action="store_true", help="Incluye fuentes approval tras una revisión explícita de términos.")
     parser.add_argument("--status", action="store_true", help="Muestra políticas y última ejecución sin ejecutar.")
-    parser.add_argument("--scope", choices=("caba", "palermo"), default="caba", help="Ámbito para conectores ya migrados al contrato.")
+    parser.add_argument("--scope", choices=("caba", "palermo", "national"), default="caba", help="Ámbito para conectores ya migrados al contrato.")
+    parser.add_argument("--since", help="Cursor/fecha YYYY-MM-DD para conectores con contrato.")
     parser.add_argument("--neighborhood", help="Barrio oficial para conectores con contrato.")
     parser.add_argument("--commune", type=int, choices=range(1, 16), help="Comuna para conectores con contrato.")
     args = parser.parse_args()
+    if args.validate and args.promote:
+        parser.error("--promote requiere una corrida de escritura; no se combina con --validate")
     if args.source:
         selected = [by_name(name) for name in args.source]
     elif args.retry_incomplete:
@@ -218,7 +227,7 @@ async def main():
                                 pilot_limit=(args.limit or source.pilot_limit) if args.pilot else None,
                                 promote=args.promote, validate_only=args.validate,
                                 include_approval=args.include_approval, scope=args.scope,
-                                neighborhood=args.neighborhood, commune=args.commune) for source in selected]
+                                neighborhood=args.neighborhood, commune=args.commune, since=args.since) for source in selected]
     print({"ok": results.count("ok"), "promoted": results.count("promoted"), "skipped": results.count("skipped"), "failed": results.count("failed")})
 
 

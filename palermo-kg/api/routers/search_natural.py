@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from api.db import get_pool
 from api.query_log import log_query
 from api.routers.search import knowledge_search
+from api.routers.observations import latest_series_points
 from geography_catalog import NEIGHBORHOOD_TO_COMMUNE, normalize_geography, resolve_neighborhood
 
 router = APIRouter(tags=["search"])
@@ -71,6 +72,63 @@ PROPERTY_LABELS = {
     "dba_high": "dBA maximo",
     "classification": "clasificacion",
 }
+
+
+FINANCE_ALIASES = (
+    (("merval",), "byma_merval_close"),
+    (("ypf", "ypfd"), "byma_ypfd_close"),
+    (("reserva",), "bcra_var_1"),
+    (("inflacion mensual",), "bcra_var_27"),
+    (("inflacion",), "bcra_var_28"),
+    (("dolar", "tipo de cambio"), "bcra_fx_usd"),
+    (("uva",), "bcra_var_1240"),
+    (("tasa",), "bcra_var_160"),
+)
+
+
+def finance_series_key(query: str) -> str | None:
+    normalized = normalize_query(query)
+    for aliases, series_key in FINANCE_ALIASES:
+        if any(alias in normalized for alias in aliases):
+            return series_key
+    return None
+
+
+async def build_finance_payload(query: str) -> dict | None:
+    normalized = normalize_query(query)
+    if "alquiler" in normalized and any(term in normalized for term in ("merval", "ypf", "dolar", "tasa")):
+        return {
+            "query": query,
+            "answer": "No tengo datos suficientes para correlacionar la serie financiera con alquileres: IDECBA alquileres todavía no fue integrado.",
+            "answer_markdown": "No tengo datos suficientes para correlacionar la serie financiera con alquileres: IDECBA alquileres todavía no fue integrado.",
+            "citations": [], "entities_used": [], "mentioned_entities": [], "explainability": [],
+        }
+    series_key = finance_series_key(query)
+    if not series_key:
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        points = await latest_series_points(conn, series_key, limit=500)
+    if not points:
+        return None
+    recent = points[-5:]
+    latest = recent[-1]
+    unit = latest.get("unit") or "sin unidad"
+    lines = [f"## {latest['entity_name']}", "",
+             f"Último dato disponible: **{latest.get('value', latest.get('value_text'))} {unit}** el {latest['observed_at']} (fuente: {latest['source_name']}). [1]",
+             "", "Últimos puntos verificados:", ""]
+    lines.extend(f"- {row['observed_at']}: {row.get('value', row.get('value_text'))} {row.get('unit') or ''}" for row in recent)
+    citation = {"entity_id": latest["entity_id"], "entity_name": latest["entity_name"],
+                "sources": [{"url": url, "valid_at": str(row["observed_at"])} for row in recent
+                            for url in (row.get("origins") or [])][:5]}
+    return {"query": query, "answer": "\n".join(lines), "answer_markdown": "\n".join(lines),
+            "citations": [citation],
+            "entities_used": [{"id": latest["entity_id"], "name": latest["entity_name"], "type": latest["entity_type"]}],
+            "mentioned_entities": [{"id": latest["entity_id"], "name": latest["entity_name"], "type": latest["entity_type"],
+                                    "subtype": None, "lat": None, "lng": None, "source_count": len(citation["sources"])}],
+            "explainability": [{"index": 1, "text": f"Serie {series_key}; última revisión del período {latest['observed_period']}.",
+                                  "entity_id": latest["entity_id"], "entity_name": latest["entity_name"], "lat": None, "lng": None,
+                                  "sources": citation["sources"]}]}
 
 
 def normalize_query(text: str) -> str:
@@ -396,6 +454,12 @@ async def knowledge_search_natural(
     Respuesta en lenguaje natural con citas reales a entidades y fuentes.
     """
     inferred = neighborhood or inferred_neighborhood(q)
+    finance_payload = await build_finance_payload(q)
+    if finance_payload:
+        await log_query(query_mode="search_natural", query_text=q,
+                        result_count=len(finance_payload["entities_used"]),
+                        entity_types_returned=[item["type"] for item in finance_payload["entities_used"]])
+        return finance_payload
     if is_restaurant_zone_count_query(q):
         aggregate_payload = await build_restaurant_zone_count_payload(q, inferred, commune)
         if aggregate_payload:

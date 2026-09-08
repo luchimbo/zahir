@@ -109,7 +109,9 @@ SELECT * FROM properties WHERE valid_until IS NULL OR valid_until > CURRENT_DATE
 INSERT IGNORE INTO entity_types (name, description) VALUES
 ('Location','Barrios y zonas'),('Facility','Espacios y equipamientos'),('Organization','Comercios y organizaciones'),
 ('Property','Inmuebles'),('Event','Eventos'),('Transport','Transporte'),('LegalEntity','Sociedades'),
-('Trademark','Marcas'),('LegalCase','Causas judiciales'),('Parcel','Parcelas'),('HistoricalRecord','Registros históricos');
+('Trademark','Marcas'),('LegalCase','Causas judiciales'),('Parcel','Parcelas'),('HistoricalRecord','Registros históricos'),
+('MarketIndex','Índices bursátiles'),('Security','Especies negociables listadas'),
+('EconomicSeries','Series estadísticas oficiales'),('Regulation','Normativa y comunicaciones de organismos nacionales');
 INSERT IGNORE INTO sources (source_name, source_url, tier) VALUES
 ('ba_data','https://data.buenosaires.gob.ar',1),('gcba_wfs','https://epok.buenosaires.gob.ar/etl/wfs/',1),
 ('google_places','https://maps.googleapis.com/maps/api/place',2),('agenda_gcba','https://turismo.buenosaires.gob.ar/agenda',2),

@@ -36,6 +36,10 @@ acceso, última ejecución, filas leídas, entidades afectadas y error si falló
 | `transporte_rmba` | manual | KML oficial | Red histórica; complementa y no reemplaza movilidad GCBA. |
 | `national_monuments` | desactivada | descubrimiento | Sin descarga estructurada unificada validada; no ingerir automáticamente. |
 | `cnv` | desactivada | pendiente | Registros públicos son buscador por registro individual, sin export masivo; no automatizar hasta validar dataset. |
+| `byma_merval` / `byma_ypf` | diaria | BYMA Open Data | Histórico oficial nacional, sin coordenadas; backfill manual y luego refresh incremental. |
+| `ambito_merval` / `ambito_ypf` | manual | endpoint approval-gated | Respaldo histórico secundario; ejecutar sólo con `--include-approval` y citar siempre Ámbito. |
+| `bcra_estadisticas` | diaria | API oficial BCRA | Allowlist macro curada; el backfill inicial es manual. |
+| `bcra_comunicaciones` | manual | índices PDF BCRA | Requiere `--include-credentials --allow-paid`; el resumen LLM es opcional. |
 
 ## Control previo a una fuente nueva
 
@@ -58,9 +62,10 @@ entrypoint es `scripts/run_sources.py`:
 .\.venv\Scripts\python scripts\run_sources.py --status
 ```
 
-Un piloto debe devolver registros Palermo, origen trazable y cero errores
+Un piloto debe devolver registros válidos, origen trazable y cero errores
 fatales. `--promote` habilita exclusivamente la fuente que cumpla esos
-criterios; el refresh diario ejecuta sólo fuentes promovidas.
+criterios; una reejecución idempotente puede escribir cero filas nuevas y aun
+así ser promovible. El refresh diario ejecuta sólo fuentes promovidas.
 
 Los adaptadores candidatos usan una URL de dataset oficial explícita, para
 evitar convertir portales o buscadores web en scraping no autorizado:

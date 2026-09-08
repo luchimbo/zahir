@@ -13,6 +13,8 @@ La base actual ya permite una v1 útil:
 - Respuestas naturales con citas reales y fallback extractivo local.
 - Query log para detectar gaps.
 - Scrapers oficiales y abiertos implementados.
+- Capa financiera nacional: series BYMA de MERVAL/YPFD, allowlist macro BCRA,
+  comunicaciones BCRA y observaciones trazables sin geografía.
 
 ## MVP v1
 
