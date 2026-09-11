@@ -280,6 +280,34 @@ async def upsert_relationship(conn, from_entity_id: str, relationship_type: str,
     )
 
 
+async def link_security_to_legal_entity(conn, security_id: str, issuer_name: str,
+                                        origins: list | None = None) -> str | None:
+    """Une una Security con la sociedad IGJ homónima, si la identificación es unívoca.
+
+    Match exacto sobre el nombre normalizado (``normalizer.normalize_name`` ya
+    unifica siglas SA/SRL). Cero coincidencias o más de una => no se crea arista:
+    una arista equivocada entre una emisora y una sociedad ajena es peor que la
+    ausencia de arista, y para los casos dudosos ya existe entity_resolver.py.
+
+    Devuelve el id del LegalEntity vinculado, o None.
+    """
+    from scrapers.shared.normalizer import normalize_name
+
+    target = normalize_name(issuer_name or "")
+    if not target:
+        return None
+    rows = await conn.fetch(
+        """SELECT id, name FROM entities
+           WHERE entity_type='LegalEntity' AND canonical_id IS NULL AND is_active=TRUE""",
+    )
+    matches = [str(row["id"]) for row in rows if normalize_name(row["name"] or "") == target]
+    if len(matches) != 1:
+        return None
+    await upsert_relationship(conn, security_id, "RELATED_TO", matches[0],
+                              confidence=0.75, origins=origins or [])
+    return matches[0]
+
+
 async def bulk_get_or_create_entities(conn, records: list[dict]) -> dict[str, str]:
     """Resuelve entidades por nombre en bloque; evita un round-trip por fila."""
     unique = {}

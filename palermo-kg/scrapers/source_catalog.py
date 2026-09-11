@@ -114,6 +114,15 @@ SOURCES = (
                license_url="https://www.ambito.com/contenidos/aviso-legal.html",
                args=("--symbol", "YPFD.BA"),
                pilot_limit=250, min_pilot_records=20, supports_contract=True, territory="national"),
+    # Padrón de BYMA (gratuito) + precios de Yahoo. mode="approval" por Yahoo, no
+    # por BYMA: el chart de query1.finance.yahoo.com es un endpoint no oficial sin
+    # licencia de reuso publicada — mismo criterio que ambito_* y cnv. BYMA no se
+    # usa para precios porque su chart sólo devuelve desde 2024-09.
+    SourceSpec("yahoo_ar_equities", "scrapers.yahoo_equities", "https://finance.yahoo.com", 3, "approval",
+               "Serie histórica diaria de las acciones argentinas en ARS (padrón BYMA + precios Yahoo)",
+               data_class="historical", refresh_schedule="daily", cost_policy="approval",
+               license_url="https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html",
+               pilot_limit=5, min_pilot_records=100, supports_contract=True, territory="national"),
     SourceSpec("bcra_estadisticas", "scrapers.bcra_estadisticas", "https://api.bcra.gob.ar", 1, "public",
                "Estadísticas monetarias y cambiarias oficiales del BCRA (API v4.0/v1.0)",
                data_class="historical", refresh_schedule="daily",

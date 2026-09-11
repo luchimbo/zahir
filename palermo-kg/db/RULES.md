@@ -1,4 +1,4 @@
-# Reglas del Knowledge Graph — Palermo
+# Reglas del Knowledge Graph — CABA
 
 Estas reglas garantizan que la base de datos se mantenga consistente a medida que crece.
 **Toda persona que toque el código debe leer y respetar estas reglas.**

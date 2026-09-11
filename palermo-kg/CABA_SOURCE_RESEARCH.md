@@ -39,3 +39,5 @@ debe usar el contrato territorial y reportar cobertura por barrio/comuna.
 - Fecha de actualización conocida y origen guardado por propiedad.
 - Geografía oficial resoluble; si no hay punto ni barrio/comuna, no se publica como entidad puntual.
 - Piloto de cada fuente en staging antes de habilitar su refresh.
+
+**Excepción — capa nacional/contextual:** una fuente sin geografía resoluble puede admitirse si (a) es una serie temporal o normativa de alcance nacional publicada por un organismo oficial, (b) se carga con `territory="national"` y sin coordenadas (`lat=lng=NULL`), de modo que nunca compite con entidades puntuales de CABA ni aparece en `scripts/caba_readiness.py`, y (c) su valor es contextual — explicar el entorno macro/financiero de la Ciudad, no describir un lugar. Las fuentes admitidas por esta vía son `byma_merval`, `byma_ypf`, `ambito_merval`, `ambito_ypf`, `bcra_estadisticas` y `bcra_comunicaciones` (ver `db/RULES.md` §11 y `SOURCE_OPERATIONS.md`).

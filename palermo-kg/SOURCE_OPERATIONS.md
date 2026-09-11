@@ -1,7 +1,7 @@
 # Operación de fuentes
 
 Este documento define cómo se habilitan, observan y mantienen las fuentes del
-Palermo Knowledge Graph. Complementa las reglas de `db/RULES.md`.
+CABA Knowledge Graph. Complementa las reglas de `db/RULES.md`.
 
 ## Registro mínimo
 
